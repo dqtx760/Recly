@@ -1,0 +1,24 @@
+{
+  "name": "dogsc-windows",
+  "productName": "DogSC",
+  "version": "0.1.2-win.1",
+  "description": "DogSC 的 Windows 适配版：录屏、轻量剪辑、自动运镜与导出。原版由神烦老狗（laogou717）创作。",
+  "author": "神烦老狗 (https://github.com/laogou717)",
+  "homepage": "https://github.com/laogou717/dogsc",
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "selftest": "electron . --selftest",
+    "test": "node test/core.test.js",
+    "package": "node scripts/package.js"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.7.0"
+  },
+  "dependencies": {
+    "koffi": "^3.3.2"
+  }
+}
