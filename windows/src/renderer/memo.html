@@ -1,56 +1,371 @@
 <!doctype html>
 <html lang="zh-Hans">
 <meta charset="utf-8">
-<title>备忘录</title>
+<title>提词器</title>
 <link rel="stylesheet" href="common.css">
 <style>
-  html, body { background: transparent; }
-  .memo { position: absolute; inset: 8px; display: flex; flex-direction: column; border-radius: 16px; overflow: hidden; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 22px rgba(0, 0, 0, 0.22); background: rgba(255, 253, 244, var(--opacity, 0.96)); }
-  header { -webkit-app-region: drag; display: flex; align-items: center; gap: 2px; height: 36px; padding: 0 6px 0 12px; font-weight: 600; color: var(--ink-soft); }
-  header button, header input { -webkit-app-region: no-drag; }
-  header button { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; }
-  header button:hover { background: rgba(0, 0, 0, 0.07); }
-  header input { width: 64px; accent-color: var(--accent); }
-  textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; padding: 4px 14px 12px; line-height: 1.6; user-select: text; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    user-select: none;
+    font-family: var(--font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  }
+  .prompter {
+    position: absolute;
+    inset: 6px;
+    display: flex;
+    flex-direction: column;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 12px 32px rgba(0, 0, 0, 0.28);
+    background: rgba(26, 26, 28, var(--opacity, 0.92));
+    color: #f5f5f7;
+    backdrop-filter: blur(16px);
+  }
+  header {
+    -webkit-app-region: drag;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 38px;
+    padding: 0 8px 0 12px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #e5e5ea;
+    background: rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    flex-shrink: 0;
+  }
+  header button, header input, header select {
+    -webkit-app-region: no-drag;
+  }
+  .header-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .h-btn {
+    height: 26px;
+    padding: 0 7px;
+    border-radius: 7px;
+    border: 0;
+    background: rgba(255, 255, 255, 0.1);
+    color: #f5f5f7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.05s;
+  }
+  .h-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+  .h-btn:active {
+    transform: scale(0.96);
+  }
+  .h-btn.active {
+    background: var(--accent, #e5a93c);
+    color: #111;
+  }
+  .speed-select {
+    min-width: 82px;
+    height: 26px;
+    padding: 0 4px;
+    border-radius: 7px;
+    border: 0;
+    background: rgba(255, 255, 255, 0.12);
+    color: #f5f5f7;
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    outline: none;
+  }
+  .speed-select option {
+    background: #222;
+    color: #fff;
+  }
+  header input[type=range] {
+    width: 54px;
+    height: 14px;
+    flex-shrink: 0;
+    accent-color: var(--accent, #e5a93c);
+    cursor: pointer;
+  }
+  .close-btn {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 7px;
+    border: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .close-btn:hover {
+    background: #e0443e;
+    color: #fff;
+  }
+  .content-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* 视线对齐参考线 */
+  .focus-guide {
+    position: absolute;
+    top: 32%;
+    left: 0;
+    right: 0;
+    height: 38px;
+    border-top: 1px dashed rgba(229, 169, 60, 0.35);
+    border-bottom: 1px dashed rgba(229, 169, 60, 0.35);
+    background: rgba(229, 169, 60, 0.05);
+    pointer-events: none;
+    z-index: 5;
+  }
+  .focus-guide::after {
+    content: "视线对齐";
+    position: absolute;
+    right: 8px;
+    top: 2px;
+    font-size: 10px;
+    color: rgba(229, 169, 60, 0.65);
+    font-weight: 600;
+  }
+  .scroll-container {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+    scroll-behavior: auto;
+  }
+  .scroll-container::-webkit-scrollbar {
+    width: 5px;
+  }
+  .scroll-container::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+  }
+  textarea {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    resize: none;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    padding: 24px 18px 80px;
+    line-height: 1.8;
+    color: #f5f5f7;
+    font-family: inherit;
+    font-size: 18px;
+    user-select: text;
+    overflow-y: scroll;
+    scrollbar-width: thin;
+  }
+  textarea::-webkit-scrollbar {
+    width: 5px;
+  }
+  textarea::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+  }
 </style>
 <body>
-  <div class="memo" id="memo">
+  <div class="prompter" id="prompter">
     <header>
-      <span>备忘录</span><span class="spacer"></span>
-      <input id="opacity" type="range" min="0.35" max="1" step="0.01" title="背景不透明度">
-      <button id="smaller" title="缩小字号">A−</button>
-      <button id="larger" title="放大字号">A+</button>
-      <button id="close" title="关闭"></button>
+      <div class="header-title">
+        <span>📝 提词器</span>
+      </div>
+      <div class="header-actions">
+        <button id="toggle-scroll" class="h-btn" title="播放 / 暂停自动滚动 (快捷键：空格)">▶ 滚屏</button>
+        <select id="speed" class="speed-select" title="滚动速度">
+          <option value="20">0.8× 慢速</option>
+          <option value="35" selected>1.0× 标准</option>
+          <option value="55">1.5× 中速</option>
+          <option value="80">2.0× 快速</option>
+        </select>
+        <button id="reset-scroll" class="h-btn" title="回到开头">↺</button>
+        <button id="smaller" class="h-btn" title="缩小字号">A−</button>
+        <button id="larger" class="h-btn" title="放大字号">A+</button>
+        <input id="opacity" type="range" min="0.30" max="1" step="0.01" title="背景透明度">
+        <button id="close" class="close-btn" title="关闭提词器">✕</button>
+      </div>
     </header>
-    <textarea id="text" placeholder="录制时要讲的要点写在这里。它会一直悬浮在最上层，但不会被录进画面。" spellcheck="false"></textarea>
+    <div class="content-wrap">
+      <div class="focus-guide"></div>
+      <textarea id="text" placeholder="录制台词、口播文稿写在这里。&#10;&#10;特性：&#10;1. 悬浮置顶，但录制视频中 100% 不入画（完全隐形）；&#10;2. 支持点击上方「▶ 滚屏」匀速自动滚动，也可随时按空格键启停；&#10;3. 可调节字号、速度与透明度；&#10;4. 文稿自动本地保存，重启不丢失。" spellcheck="false"></textarea>
+    </div>
   </div>
+
   <script>
     'use strict';
     const fs = require('node:fs');
-    const { icon, query } = require('./common');
+    const { query } = require('./common');
     const { ipcRenderer } = require('electron');
     const store = query.get('store');
-    let memo = { text: '', fontSize: 16, opacity: 0.96 };
-    try { memo = { ...memo, ...JSON.parse(fs.readFileSync(store, 'utf8')) }; } catch { /* 第一次使用 */ }
-    const text = document.getElementById('text');
+
+    let memo = { text: '', fontSize: 18, opacity: 0.92, speed: 35 };
+    try {
+      memo = { ...memo, ...JSON.parse(fs.readFileSync(store, 'utf8')) };
+    } catch {
+      // 首次使用
+    }
+
+    const textEl = document.getElementById('text');
+    const prompterEl = document.getElementById('prompter');
+    const opacityEl = document.getElementById('opacity');
+    const speedEl = document.getElementById('speed');
+    const toggleBtn = document.getElementById('toggle-scroll');
+    const resetBtn = document.getElementById('reset-scroll');
+    const smallerBtn = document.getElementById('smaller');
+    const largerBtn = document.getElementById('larger');
+    const closeBtn = document.getElementById('close');
+
+    let isScrolling = false;
+    let scrollAnimId = null;
+    let lastTimestamp = null;
+
     const apply = () => {
-      text.style.fontSize = `${memo.fontSize}px`;
-      document.getElementById('memo').style.setProperty('--opacity', memo.opacity);
-      document.getElementById('opacity').value = memo.opacity;
+      textEl.style.fontSize = `${memo.fontSize}px`;
+      prompterEl.style.setProperty('--opacity', memo.opacity);
+      opacityEl.value = memo.opacity;
+      if (memo.speed) speedEl.value = memo.speed;
     };
-    // 文稿自动保存在本机，重启后还在。
-    let pending = null;
+
+    let pendingSave = null;
     const save = () => {
-      clearTimeout(pending);
-      pending = setTimeout(() => fs.writeFileSync(store, JSON.stringify(memo)), 250);
+      clearTimeout(pendingSave);
+      pendingSave = setTimeout(() => {
+        try { fs.writeFileSync(store, JSON.stringify(memo)); } catch {}
+      }, 250);
     };
-    text.value = memo.text;
-    text.addEventListener('input', () => { memo.text = text.value; save(); });
-    document.getElementById('opacity').addEventListener('input', (event) => { memo.opacity = Number(event.target.value); apply(); save(); });
-    document.getElementById('smaller').addEventListener('click', () => { memo.fontSize = Math.max(memo.fontSize - 2, 11); apply(); save(); });
-    document.getElementById('larger').addEventListener('click', () => { memo.fontSize = Math.min(memo.fontSize + 2, 40); apply(); save(); });
-    document.getElementById('close').innerHTML = icon('close');
-    document.getElementById('close').addEventListener('click', () => { fs.writeFileSync(store, JSON.stringify(memo)); ipcRenderer.send('window:close'); });
+
+    // 自动平滑滚动
+    function startScroll() {
+      if (isScrolling) return;
+      isScrolling = true;
+      toggleBtn.classList.add('active');
+      toggleBtn.textContent = '❚❚ 暂停';
+      lastTimestamp = performance.now();
+
+      function step(now) {
+        if (!isScrolling) return;
+        const dt = (now - lastTimestamp) / 1000;
+        lastTimestamp = now;
+
+        const pixelsPerSec = Number(memo.speed) || 35;
+        textEl.scrollTop += pixelsPerSec * dt;
+
+        // 若滚动到底部则停止
+        if (textEl.scrollTop + textEl.clientHeight >= textEl.scrollHeight - 5) {
+          stopScroll();
+          return;
+        }
+
+        scrollAnimId = requestAnimationFrame(step);
+      }
+      scrollAnimId = requestAnimationFrame(step);
+    }
+
+    function stopScroll() {
+      isScrolling = false;
+      toggleBtn.classList.remove('active');
+      toggleBtn.textContent = '▶ 滚屏';
+      if (scrollAnimId) {
+        cancelAnimationFrame(scrollAnimId);
+        scrollAnimId = null;
+      }
+    }
+
+    function toggleAutoScroll() {
+      if (isScrolling) {
+        stopScroll();
+      } else {
+        startScroll();
+      }
+    }
+
+    // 事件绑定
+    textEl.value = memo.text;
+    textEl.addEventListener('input', () => {
+      memo.text = textEl.value;
+      save();
+    });
+
+    toggleBtn.addEventListener('click', toggleAutoScroll);
+
+    resetBtn.addEventListener('click', () => {
+      stopScroll();
+      textEl.scrollTop = 0;
+    });
+
+    speedEl.addEventListener('change', (e) => {
+      memo.speed = Number(e.target.value);
+      save();
+    });
+
+    opacityEl.addEventListener('input', (e) => {
+      memo.opacity = Number(e.target.value);
+      apply();
+      save();
+    });
+
+    smallerBtn.addEventListener('click', () => {
+      memo.fontSize = Math.max(memo.fontSize - 2, 12);
+      apply();
+      save();
+    });
+
+    largerBtn.addEventListener('click', () => {
+      memo.fontSize = Math.min(memo.fontSize + 2, 48);
+      apply();
+      save();
+    });
+
+    closeBtn.addEventListener('click', () => {
+      stopScroll();
+      try { fs.writeFileSync(store, JSON.stringify(memo)); } catch {}
+      ipcRenderer.send('window:close');
+    });
+
+    // 快捷键支持：按空格键启停滚动（文本框未获得焦点或只读时）
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && e.target !== textEl) {
+        e.preventDefault();
+        toggleAutoScroll();
+      } else if (e.code === 'Escape') {
+        stopScroll();
+      }
+    });
+
     apply();
   </script>
 </body>

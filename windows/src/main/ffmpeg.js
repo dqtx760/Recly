@@ -48,9 +48,36 @@ async function ffmpeg(args, options) {
   return result;
 }
 
+const previewJobs = new Map();
+async function ensurePreview(sourceFile, previewFile) {
+  const source = fs.statSync(sourceFile);
+  try {
+    const preview = fs.statSync(previewFile);
+    if (preview.size > 1024 && preview.mtimeMs >= source.mtimeMs) return previewFile;
+  } catch {
+    // 首次打开旧项目时还没有预览文件。
+  }
+  if (previewJobs.has(previewFile)) return previewJobs.get(previewFile);
+  const job = (async () => {
+    const temporary = path.join(path.dirname(previewFile), 'screen.preview.partial.mp4');
+    try {
+      await ffmpeg(['-loglevel', 'error', '-i', sourceFile, '-vf', 'fps=20,scale=1280:-2',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '25', '-pix_fmt', 'yuv420p',
+        '-an', '-movflags', '+faststart', temporary]);
+      fs.renameSync(temporary, previewFile);
+      return previewFile;
+    } catch (error) {
+      fs.rmSync(temporary, { force: true });
+      throw error;
+    }
+  })().finally(() => previewJobs.delete(previewFile));
+  previewJobs.set(previewFile, job);
+  return job;
+}
+
 async function checkAvailable() {
   const result = await run(binaries.ffmpeg, ['-hide_banner', '-filters']);
-  if (result.code !== 0) return { ok: false, reason: '没有找到 ffmpeg。请先安装（winget install Gyan.FFmpeg）并重新打开 DogSC。' };
+  if (result.code !== 0) return { ok: false, reason: '没有找到 ffmpeg。请先安装（winget install Gyan.FFmpeg）并重新打开 Recly。' };
   const has = (name) => new RegExp(`\\s${name}\\s`).test(result.stdout);
   if (!has('ddagrab')) return { ok: false, reason: '当前 ffmpeg 不带 ddagrab 采集滤镜，请换用 6.0 以上的完整版。' };
   return { ok: true };
@@ -99,8 +126,13 @@ function captureFilter(source, fps) {
 async function startCapture({ source, fps, file, width, height }) {
   const encoder = await detectEncoder();
   const bitrate = exportVideoBitrate(width, height, fps);
+  const gpuConversion = encoder.name === 'h264_nvenc' && (await run(binaries.ffmpeg, [
+    '-hide_banner', '-loglevel', 'error', '-filter_complex', `${captureFilter(source, fps)},scale_d3d11=format=nv12`,
+    '-frames:v', '2', ...encoder.args(bitrate), '-f', 'null', '-',
+  ])).code === 0;
   // setpts 里的 print(time(0)) 只在第 0 帧执行一次，把首帧系统时钟打到 stderr，PTS 本身不变。
-  const graph = `${captureFilter(source, fps)},setpts='PTS+0*if(eq(N,0),print(time(0)),0)',hwdownload,format=bgra,${COLOR_FILTER},format=${encoder.format}`;
+  const conversion = gpuConversion ? 'scale_d3d11=format=nv12' : `hwdownload,format=bgra,${COLOR_FILTER},format=${encoder.format}`;
+  const graph = `${captureFilter(source, fps)},setpts='PTS+0*if(eq(N,0),print(time(0)),0)',${conversion}`;
   const args = [
     '-hide_banner', '-loglevel', 'info', '-nostats', '-y',
     '-filter_complex', graph,
@@ -297,6 +329,6 @@ function buildMuxArguments({ videoFile, frameRate, audioTracks, segments, source
 }
 
 module.exports = {
-  resolveBinaries, run, ffmpeg, checkAvailable, detectEncoder, startCapture, probe,
+  resolveBinaries, run, ffmpeg, ensurePreview, checkAvailable, detectEncoder, startCapture, probe,
   buildVideoIndex, remuxToMp4, finalizeCamera, finalizeAudio, makeThumbnails, buildMuxArguments,
 };

@@ -143,7 +143,7 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
       // 编码器来不及时等它消化，避免未编码帧在显存里堆积。
       const waitingSince = performance.now();
       while (encoder.encodeQueueSize > 6 && !encoderError) {
-        if (performance.now() - waitingSince > STALL_TIMEOUT) throw Object.assign(new Error('视频编码器超过 20 秒没有响应'), { stalled: true });
+        if (performance.now() - waitingSince > STALL_TIMEOUT) throw Object.assign(new Error(`视频编码器超过 20 秒没有响应（第 ${n + 1}/${totalFrames} 帧，队列 ${encoder.encodeQueueSize}，${config.codec} / ${config.hardwareAcceleration}）`), { stalled: true });
         await new Promise((resolve) => setTimeout(resolve, 2));
       }
       if (n % 5 === 0 || n === totalFrames - 1) {

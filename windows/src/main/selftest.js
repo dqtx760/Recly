@@ -194,9 +194,9 @@ async function run(context) {
     // ---- 6. 其余界面截图
     {
       for (const [file, options, name] of [
-        ['picker.html', { width: 900, height: 620 }, 'ui-picker.png'],
+        ['picker.html', { width: 960, height: 760 }, 'ui-picker.png'],
         ['area.html', { width: 900, height: 520, frame: false, transparent: true }, 'ui-area.png'],
-        ['memo.html', { width: 360, height: 300, frame: false, transparent: true }, 'ui-memo.png'],
+        ['memo.html', { width: 480, height: 300, frame: false, transparent: true }, 'ui-memo.png'],
       ]) {
         const win = createWindow(file, { ...options, show: true }, { store: path.join(output, 'memo.json') });
         await sleep(file === 'picker.html' ? 2600 : 1200);

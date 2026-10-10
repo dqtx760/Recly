@@ -10,7 +10,8 @@ const { Preview } = require('./preview');
 const { TimelineView } = require('./timeline-view');
 const { Inspector, TABS } = require('./inspector');
 const { openExportDialog } = require('./export-dialog');
-
+const { initPresetsUI } = require('./presets-ui');
+const { openShortcutsModal } = require('./shortcuts-modal');
 const $ = (id) => document.getElementById(id);
 const directory = query.get('project');
 
@@ -47,20 +48,27 @@ async function main() {
     const name = event.target.value.trim() || project.name;
     event.target.value = name;
     store.mutate((draft) => { draft.name = name; });
-    document.title = `${name} — DogSC`;
+    document.title = `${name} — Recly`;
   });
   $('project-name').addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === 'Escape') event.target.blur(); });
   $('open-library').addEventListener('click', () => ipcRenderer.send('recorder:library'));
   $('undo').addEventListener('click', () => store.undo());
   $('redo').addEventListener('click', () => store.redo());
   $('export').addEventListener('click', () => openExportDialog(store, preview, $('modal')));
-  $('shortcuts').addEventListener('click', () => {
-    const modal = $('modal');
-    modal.hidden = false;
-    modal.replaceChildren(element('div', { class: 'dialog card' }, element('h2', {}, '快捷键'),
-      element('div', { class: 'keys' }, SHORTCUTS.flatMap(([keys, action]) => [element('kbd', {}, keys), element('span', {}, action)])),
-      element('div', { class: 'actions' }, element('button', { class: 'btn primary', onclick: () => { modal.hidden = true; } }, '知道了'))));
+  const presetsUI = await initPresetsUI({
+    store,
+    button: $('scene-preset'),
+    modal: $('modal'),
+    toast,
   });
+  $('shortcuts').addEventListener('click', () => {
+    openShortcutsModal($('modal'));
+  });
+
+  // ---- 窗口控制（最小化、最大化 / 还原、关闭）
+  if ($('editor-min')) $('editor-min').addEventListener('click', () => ipcRenderer.send('window:minimize'));
+  if ($('editor-max')) $('editor-max').addEventListener('click', () => ipcRenderer.send('window:toggle-maximize'));
+  if ($('editor-close')) $('editor-close').addEventListener('click', () => ipcRenderer.send('window:close'));
 
   // ---- 左侧分类栏与画布比例
   const railButtons = TABS.map((tab) => element('button', { html: `${icon(tab.icon)}<span>${tab.label}</span>`, onclick: () => showTab(tab.id) }));
@@ -156,7 +164,9 @@ async function main() {
     renderRatio();
   };
   store.subscribe(refreshChrome);
-  preview.onState = () => { $('play').innerHTML = icon(preview.playing ? 'pause' : 'play'); };
+  preview.onState = () => { $('play').innerHTML = icon(preview.playing || preview.pendingPlay ? 'pause' : 'play'); };
+  preview.onStatus = (status) => { $('preview-status').textContent = status; };
+  preview.onStatus(preview.status);
   preview.onTime = (time) => {
     $('clock-now').textContent = formatTime(time);
     timelineView.updatePlayhead();
@@ -200,7 +210,7 @@ async function main() {
 
   // 关窗前把还没落盘的改动写完。
   window.addEventListener('beforeunload', () => { store.save(); });
-  document.title = `${project.name} — DogSC`;
+  document.title = `${project.name} — Recly`;
 
   // 自测钩子：切到运镜面板、选中第一段缩放并跳到它的保持区间。
   window.dogscSelfTest = () => {

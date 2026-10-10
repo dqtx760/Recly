@@ -137,10 +137,128 @@ function makeProject({ name, media, capture }) {
   };
 }
 
+/// 规范化背景配置，为视频背景补充默认循环设置等。
+function normalizeBackground(bg) {
+  if (!bg || typeof bg !== 'object') {
+    return { kind: 'pattern', preset: 'obsidianGrid' };
+  }
+  switch (bg.kind) {
+    case 'video':
+      return {
+        kind: 'video',
+        file: typeof bg.file === 'string' ? bg.file : '',
+        isLooping: bg.isLooping !== false,
+      };
+    case 'image':
+      return {
+        kind: 'image',
+        file: typeof bg.file === 'string' ? bg.file : null,
+        ...(bg.stamp !== undefined ? { stamp: bg.stamp } : {}),
+      };
+    case 'color':
+      return {
+        kind: 'color',
+        color: typeof bg.color === 'string' ? bg.color : '#1F2A44',
+      };
+    case 'wallpaper':
+      return {
+        kind: 'wallpaper',
+        file: typeof bg.file === 'string' ? bg.file : null,
+      };
+    case 'pattern':
+    default:
+      return {
+        kind: 'pattern',
+        preset: bg.preset && PATTERN_PRESETS[bg.preset] ? bg.preset : 'obsidianGrid',
+      };
+  }
+}
+
+/// 校验背景配置合法性。
+function isValidBackground(bg) {
+  if (!bg || typeof bg !== 'object' || typeof bg.kind !== 'string') return false;
+  switch (bg.kind) {
+    case 'video':
+      return typeof bg.file === 'string' && bg.file.length > 0 && typeof bg.isLooping === 'boolean';
+    case 'image':
+      return typeof bg.file === 'string' && bg.file.length > 0;
+    case 'color':
+      return typeof bg.color === 'string' && bg.color.length > 0;
+    case 'wallpaper':
+      return bg.file === null || typeof bg.file === 'string';
+    case 'pattern':
+      return !bg.preset || Boolean(PATTERN_PRESETS[bg.preset]);
+    default:
+      return false;
+  }
+}
+
+/// 背景状态求值（包括视频循环时间计算、模糊、缩放与透明度）。
+function evaluateBackground(canvas, time = 0, options = {}) {
+  const bg = normalizeBackground(canvas && canvas.background);
+  const blur = Math.max((canvas && canvas.backgroundBlur) || 0, 0);
+  const patternScale = (canvas && canvas.patternScale) || 1;
+  const patternOpacity = (canvas && canvas.patternOpacity !== undefined) ? canvas.patternOpacity : 1;
+
+  if (bg.kind === 'video') {
+    const duration = options.duration || options.videoDuration || 0;
+    let videoTime = Math.max(time, 0);
+    if (duration > 0) {
+      videoTime = bg.isLooping ? (videoTime % duration) : Math.min(videoTime, duration);
+    }
+    return {
+      kind: 'video',
+      file: bg.file,
+      isLooping: bg.isLooping,
+      time: videoTime,
+      blur,
+      patternScale,
+      patternOpacity,
+    };
+  }
+  if (bg.kind === 'image') {
+    return {
+      kind: 'image',
+      file: bg.file,
+      blur,
+      patternScale,
+      patternOpacity,
+    };
+  }
+  if (bg.kind === 'color') {
+    return {
+      kind: 'color',
+      color: bg.color,
+      blur,
+      patternScale,
+      patternOpacity,
+    };
+  }
+  if (bg.kind === 'wallpaper') {
+    return {
+      kind: 'wallpaper',
+      file: bg.file,
+      blur,
+      patternScale,
+      patternOpacity,
+    };
+  }
+  return {
+    kind: 'pattern',
+    preset: bg.preset,
+    blur,
+    patternScale,
+    patternOpacity,
+  };
+}
+
 /// 旧项目补默认值；新增字段在这里兜底，不改用户已保存的值。
 function normalizeProject(project) {
   const merge = (defaults, value) => ({ ...defaults, ...(value || {}) });
   project.canvas = merge(defaultCanvas(), project.canvas);
+  if (project.canvas.background) {
+    project.canvas.background = normalizeBackground(project.canvas.background);
+  }
   project.camera = merge(defaultCamera(), project.camera);
   project.cursorStyle = merge(defaultCursorStyle(), project.cursorStyle);
   project.motion = merge(defaultMotion(), project.motion);
@@ -203,5 +321,6 @@ module.exports = {
   clamp, even, uid: randomUUID,
   ASPECT_RATIOS, RESOLUTIONS, PATTERN_PRESETS, CAMERA_SHAPES, CLICK_EFFECTS, ZOOM_EASINGS,
   defaultCanvas, defaultCamera, defaultCursorStyle, defaultMotion, defaultAudio,
+  normalizeBackground, isValidBackground, evaluateBackground,
   makeProject, normalizeProject, canvasDimensions, exportVideoBitrate, EXPORT_AUDIO_BITRATE,
 };

@@ -17,6 +17,182 @@ const frameSize = (frame) => ({
   width: frame.displayWidth || frame.videoWidth || frame.width,
   height: frame.displayHeight || frame.videoHeight || frame.height,
 });
+function createMockContext(canvas) {
+  const stack = [];
+  const ctx = {
+    canvas,
+    fillStyle: '#000000',
+    strokeStyle: '#000000',
+    lineWidth: 1,
+    globalAlpha: 1,
+    shadowColor: 'transparent',
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    filter: 'none',
+    imageSmoothingQuality: 'high',
+    imageSmoothingEnabled: true,
+    font: '10px sans-serif',
+    textAlign: 'left',
+    textBaseline: 'alphabetic',
+    save() {
+      stack.push({
+        fillStyle: this.fillStyle,
+        strokeStyle: this.strokeStyle,
+        lineWidth: this.lineWidth,
+        globalAlpha: this.globalAlpha,
+        shadowColor: this.shadowColor,
+        shadowBlur: this.shadowBlur,
+        shadowOffsetX: this.shadowOffsetX,
+        shadowOffsetY: this.shadowOffsetY,
+        filter: this.filter,
+      });
+    },
+    restore() {
+      if (stack.length) {
+        Object.assign(this, stack.pop());
+      }
+    },
+    beginPath() {},
+    closePath() {},
+    moveTo() {},
+    lineTo() {},
+    arc() {},
+    roundRect() {},
+    rect() {},
+    fill() {},
+    stroke() {},
+    clip() {},
+    fillRect() {},
+    strokeRect() {},
+    clearRect() {},
+    fillText() {},
+    strokeText() {},
+    measureText(text) {
+      return { width: (text ? text.length : 0) * 8 };
+    },
+    drawImage() {},
+    transform() {},
+    setTransform() {},
+    scale() {},
+    translate() {},
+    rotate() {},
+  };
+  return ctx;
+}
+
+function createMockCanvas(width, height) {
+  const canvas = {
+    width: Math.max(Math.round(width) || 1, 1),
+    height: Math.max(Math.round(height) || 1, 1),
+    getContext(type) {
+      if (type === '2d') {
+        if (!this._ctx) this._ctx = createMockContext(this);
+        return this._ctx;
+      }
+      return null;
+    },
+  };
+  return canvas;
+}
+
+function createOffscreenCanvas(width, height) {
+  const w = Math.max(Math.round(width) || 1, 1);
+  const h = Math.max(Math.round(height) || 1, 1);
+  if (typeof OffscreenCanvas !== 'undefined') {
+    return new OffscreenCanvas(w, h);
+  }
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  }
+  return createMockCanvas(w, h);
+}
+
+function drawTexturedTriangle(ctx, image, src, dst) {
+  const [x0, y0] = [src[0].x, src[0].y];
+  const [x1, y1] = [src[1].x, src[1].y];
+  const [x2, y2] = [src[2].x, src[2].y];
+
+  const [u0, v0] = [dst[0].x, dst[0].y];
+  const [u1, v1] = [dst[1].x, dst[1].y];
+  const [u2, v2] = [dst[2].x, dst[2].y];
+
+  const delta = (x0 - x2) * (y1 - y2) - (x1 - x2) * (y0 - y2);
+  if (Math.abs(delta) < 1e-9) return;
+
+  const a = ((u0 - u2) * (y1 - y2) - (u1 - u2) * (y0 - y2)) / delta;
+  const c = ((x0 - x2) * (u1 - u2) - (x1 - x2) * (u0 - u2)) / delta;
+  const e = u0 - a * x0 - c * y0;
+
+  const b = ((v0 - v2) * (y1 - y2) - (v1 - v2) * (y0 - y2)) / delta;
+  const d = ((x0 - x2) * (v1 - v2) - (x1 - x2) * (v0 - v2)) / delta;
+  const f = v0 - b * x0 - d * y0;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(u0, v0);
+  ctx.lineTo(u1, v1);
+  ctx.lineTo(u2, v2);
+  ctx.closePath();
+  ctx.clip();
+  ctx.transform(a, b, c, d, e, f);
+  ctx.drawImage(image, 0, 0);
+  ctx.restore();
+}
+
+function renderPerspectiveMesh(ctx, image, sourceRect, quad, subdivisions = 8) {
+  if (!quad || !image) return;
+  const mapper = quad.projector ? quad.projector(sourceRect) : null;
+  if (!mapper || !mapper.valid) {
+    ctx.drawImage(image, quad.topLeft?.x ?? sourceRect.x, quad.topLeft?.y ?? sourceRect.y);
+    return;
+  }
+
+  const N = Math.max(subdivisions, 2);
+  const sw = sourceRect.width;
+  const sh = sourceRect.height;
+
+  for (let i = 0; i < N; i++) {
+    const u0 = i / N;
+    const u1 = (i + 1) / N;
+    const sx0 = sourceRect.x + u0 * sw;
+    const sx1 = sourceRect.x + u1 * sw;
+    const lx0 = u0 * sw;
+    const lx1 = u1 * sw;
+
+    for (let j = 0; j < N; j++) {
+      const v0 = j / N;
+      const v1 = (j + 1) / N;
+      const sy0 = sourceRect.y + v0 * sh;
+      const sy1 = sourceRect.y + v1 * sh;
+      const ly0 = v0 * sh;
+      const ly1 = v1 * sh;
+
+      const p00 = mapper.project({ x: sx0, y: sy0 });
+      const p10 = mapper.project({ x: sx1, y: sy0 });
+      const p01 = mapper.project({ x: sx0, y: sy1 });
+      const p11 = mapper.project({ x: sx1, y: sy1 });
+
+      if (!p00 || !p10 || !p01 || !p11) continue;
+
+      drawTexturedTriangle(
+        ctx,
+        image,
+        [{ x: lx0, y: ly0 }, { x: lx1, y: ly0 }, { x: lx0, y: ly1 }],
+        [p00, p10, p01]
+      );
+      drawTexturedTriangle(
+        ctx,
+        image,
+        [{ x: lx1, y: ly0 }, { x: lx1, y: ly1 }, { x: lx0, y: ly1 }],
+        [p10, p11, p01]
+      );
+    }
+  }
+}
 
 function loadImage(file) {
   return new Promise((resolve) => {
@@ -26,7 +202,6 @@ function loadImage(file) {
     image.src = pathToFileURL(file).href;
   });
 }
-
 class Compositor {
   constructor(directory) {
     this.directory = directory;
@@ -53,7 +228,7 @@ class Compositor {
     const image = file ? this.images.get(file) : null;
     const key = JSON.stringify([canvas.background, canvas.backgroundBlur, canvas.patternScale, canvas.patternOpacity, width, height, Boolean(image)]);
     if (this.backgroundKey === key) return this.background;
-    const layer = new OffscreenCanvas(width, height);
+    const layer = createOffscreenCanvas(width, height);
     const ctx = layer.getContext('2d', { alpha: false });
     const background = canvas.background;
     if (background.kind === 'color') {
@@ -136,28 +311,306 @@ class Compositor {
     ctx.restore();
   }
 
-  drawScreen(ctx, screen, frame) {
-    const rect = screen.finalRect;
-    const border = screen.borderWidth;
-    const outer = border > 0
-      ? { x: rect.x - border, y: rect.y - border, width: rect.width + border * 2, height: rect.height + border * 2 }
-      : rect;
-    this.drawShadow(ctx, outer, screen.cornerRadius + border, screen.shadow);
-    if (border > 0) {
-      ctx.fillStyle = screen.borderColor;
-      roundedRect(ctx, outer, screen.cornerRadius + border);
-      ctx.fill();
-    }
-    ctx.save();
-    roundedRect(ctx, rect, screen.cornerRadius);
-    ctx.clip();
+  drawScreenContent(ctx, rect, frame, crop) {
     if (frame) {
-      ctx.drawImage(frame, rect.x, rect.y, rect.width, rect.height);
+      if (crop && (crop.width < 0.999 || crop.height < 0.999 || crop.x > 0.001 || crop.y > 0.001)) {
+        const sourceSize = frameSize(frame);
+        const sRect = crop.cropSourceRect
+          ? crop.cropSourceRect(sourceSize.width, sourceSize.height)
+          : {
+              x: crop.x * sourceSize.width,
+              y: crop.y * sourceSize.height,
+              width: crop.width * sourceSize.width,
+              height: crop.height * sourceSize.height,
+            };
+        ctx.drawImage(frame, sRect.x, sRect.y, sRect.width, sRect.height, rect.x, rect.y, rect.width, rect.height);
+      } else {
+        ctx.drawImage(frame, rect.x, rect.y, rect.width, rect.height);
+      }
     } else {
       ctx.fillStyle = '#1b1c20';
       ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
     }
-    ctx.restore();
+  }
+
+  drawMosaics(ctx, mosaics, rect, frame) {
+    if (!mosaics || !mosaics.length) return;
+    for (const mosaic of mosaics) {
+      const progress = mosaic.transitionProgress ?? mosaic.progress ?? 1;
+      if (progress <= 0.001) continue;
+
+      const mx = rect.x + mosaic.sourceRect.x * rect.width;
+      const my = rect.y + mosaic.sourceRect.y * rect.height;
+      const mw = mosaic.sourceRect.width * rect.width;
+      const mh = mosaic.sourceRect.height * rect.height;
+      const cr = Math.min(mw, mh) * (mosaic.cornerRadius || 0);
+
+      if (mosaic.style === 'blur') {
+        ctx.save();
+        roundedRect(ctx, { x: mx, y: my, width: mw, height: mh }, cr);
+        ctx.clip();
+        const blurRadius = (4 + (mosaic.intensity ?? 0.55) * 44) * progress;
+        if (frame) {
+          ctx.filter = `blur(${blurRadius}px)`;
+          this.drawScreenContent(ctx, rect, frame, null);
+          ctx.filter = 'none';
+        } else {
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.28 * progress})`;
+          ctx.fillRect(mx, my, mw, mh);
+        }
+        ctx.restore();
+      } else if (mosaic.style === 'spotlight') {
+        ctx.save();
+        const dimming = (mosaic.spotlightDimming ?? 0.22) * progress;
+        ctx.fillStyle = `rgba(0, 0, 0, ${dimming})`;
+        ctx.beginPath();
+        ctx.rect(rect.x, rect.y, rect.width, rect.height);
+        roundedRect(ctx, { x: mx, y: my, width: mw, height: mh }, cr);
+        ctx.fill('evenodd');
+        ctx.restore();
+      } else if (mosaic.style === 'pixelate') {
+        ctx.save();
+        roundedRect(ctx, { x: mx, y: my, width: mw, height: mh }, cr);
+        ctx.clip();
+        ctx.fillStyle = `rgba(128, 128, 128, ${0.35 * progress})`;
+        ctx.fillRect(mx, my, mw, mh);
+        ctx.restore();
+      }
+    }
+  }
+
+  draw3DScreen(ctx, screen, frame) {
+    const quad = screen.projectedQuad;
+    const dec = screen.decoration;
+    const isDecorated = dec && dec.style && dec.style !== 'none';
+    const sourceRect = isDecorated ? (dec.outerRect || screen.finalRect) : screen.finalRect;
+
+    if (!quad) {
+      this.drawScreen(ctx, { ...screen, rotationX: 0, rotationY: 0, rotationZ: 0 }, frame);
+      return;
+    }
+
+    // 阴影投射
+    if (screen.shadow && screen.shadow.opacity > 0) {
+      ctx.save();
+      ctx.shadowColor = `rgba(0,0,0,${screen.shadow.opacity})`;
+      ctx.shadowBlur = (screen.shadow.radius || 22) * 2;
+      ctx.shadowOffsetY = screen.shadow.offsetY || 12;
+      ctx.fillStyle = '#000000';
+      ctx.beginPath();
+      ctx.moveTo(quad.topLeft.x, quad.topLeft.y);
+      ctx.lineTo(quad.topRight.x, quad.topRight.y);
+      ctx.lineTo(quad.bottomRight.x, quad.bottomRight.y);
+      ctx.lineTo(quad.bottomLeft.x, quad.bottomLeft.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 离线渲染 2D 屏幕卡片（包含外框与修饰）
+    const offscreen = createOffscreenCanvas(sourceRect.width, sourceRect.height);
+    const offCtx = offscreen.getContext('2d');
+    if (!offCtx) return;
+
+    offCtx.save();
+    offCtx.translate(-sourceRect.x, -sourceRect.y);
+
+    if (isDecorated) {
+      const outerRect = dec.outerRect || screen.finalRect;
+      const outerRadius = dec.outerCornerRadius ?? screen.cornerRadius;
+
+      offCtx.fillStyle = dec.surfaceColor || (dec.isDark ? '#222327' : '#ecedf0');
+      roundedRect(offCtx, outerRect, outerRadius);
+      offCtx.fill();
+
+      if (dec.toolbarRect) {
+        offCtx.save();
+        roundedRect(offCtx, outerRect, outerRadius);
+        offCtx.clip();
+
+        offCtx.fillStyle = dec.toolbarColor || (dec.isDark ? '#313238' : '#f4f4f6');
+        offCtx.fillRect(dec.toolbarRect.x, dec.toolbarRect.y, dec.toolbarRect.width, dec.toolbarRect.height);
+
+        if (dec.separatorColor) {
+          offCtx.strokeStyle = dec.separatorColor;
+          offCtx.lineWidth = 1;
+          offCtx.beginPath();
+          offCtx.moveTo(dec.toolbarRect.x, dec.toolbarRect.y + dec.toolbarRect.height);
+          offCtx.lineTo(dec.toolbarRect.x + dec.toolbarRect.width, dec.toolbarRect.y + dec.toolbarRect.height);
+          offCtx.stroke();
+        }
+
+        const buttons3D = Array.isArray(dec.controls) ? dec.controls : (dec.controls?.buttons || []);
+        for (const ctrl of buttons3D) {
+          offCtx.fillStyle = ctrl.color;
+          offCtx.beginPath();
+          const cx = ctrl.cx ?? (ctrl.x + (ctrl.radius ?? (ctrl.width / 2)));
+          const cy = ctrl.cy ?? (ctrl.y + (ctrl.radius ?? (ctrl.height / 2)));
+          const r = ctrl.radius ?? (ctrl.width / 2);
+          offCtx.arc(cx, cy, r, 0, Math.PI * 2);
+          offCtx.fill();
+        }
+
+        if (dec.title) {
+          offCtx.fillStyle = dec.glyphColor || '#7a7c84';
+          offCtx.font = '12px sans-serif';
+          offCtx.textAlign = 'center';
+          offCtx.textBaseline = 'middle';
+          offCtx.fillText(dec.title, dec.toolbarRect.x + dec.toolbarRect.width / 2, dec.toolbarRect.y + dec.toolbarRect.height / 2);
+        }
+
+        if (dec.addressFieldRect && dec.browserAddress) {
+          const af = dec.addressFieldRect;
+          offCtx.fillStyle = dec.fieldColor || (dec.isDark ? '#1b1c20' : '#ffffff');
+          roundedRect(offCtx, af, af.cornerRadius ?? 4);
+          offCtx.fill();
+
+          offCtx.fillStyle = dec.glyphColor || '#7a7c84';
+          offCtx.font = '11px sans-serif';
+          offCtx.textAlign = 'center';
+          offCtx.textBaseline = 'middle';
+          offCtx.fillText(dec.browserAddress, af.x + af.width / 2, af.y + af.height / 2);
+        }
+
+        offCtx.restore();
+      }
+
+      const contentRect = screen.finalRect;
+      const contentRadius = dec.contentCornerRadius ?? screen.cornerRadius;
+      offCtx.save();
+      roundedRect(offCtx, contentRect, contentRadius);
+      offCtx.clip();
+      this.drawScreenContent(offCtx, contentRect, frame, screen.crop);
+      if (screen.mosaics && screen.mosaics.length) {
+        this.drawMosaics(offCtx, screen.mosaics, contentRect, frame);
+      }
+      offCtx.restore();
+    } else {
+      const rect = screen.finalRect;
+      const border = screen.borderWidth || 0;
+      if (border > 0) {
+        const outer = { x: rect.x - border, y: rect.y - border, width: rect.width + border * 2, height: rect.height + border * 2 };
+        offCtx.fillStyle = screen.borderColor || '#FFFFFF';
+        roundedRect(offCtx, outer, screen.cornerRadius + border);
+        offCtx.fill();
+      }
+      offCtx.save();
+      roundedRect(offCtx, rect, screen.cornerRadius);
+      offCtx.clip();
+      this.drawScreenContent(offCtx, rect, frame, screen.crop);
+      if (screen.mosaics && screen.mosaics.length) {
+        this.drawMosaics(offCtx, screen.mosaics, rect, frame);
+      }
+      offCtx.restore();
+    }
+
+    offCtx.restore();
+
+    // 通过透视网格细分渲染单应性四边形
+    renderPerspectiveMesh(ctx, offscreen, sourceRect, quad, 8);
+  }
+
+  drawScreen(ctx, screen, frame) {
+    if (!screen) return;
+    if (screen.rotationX || screen.rotationY || screen.rotationZ) {
+      this.draw3DScreen(ctx, screen, frame);
+      return;
+    }
+
+    const dec = screen.decoration;
+    if (dec && dec.style && dec.style !== 'none') {
+      const outerRect = dec.outerRect || screen.finalRect;
+      const outerRadius = dec.outerCornerRadius ?? screen.cornerRadius;
+
+      this.drawShadow(ctx, outerRect, outerRadius, screen.shadow);
+
+      ctx.fillStyle = dec.surfaceColor || (dec.isDark ? '#222327' : '#ecedf0');
+      roundedRect(ctx, outerRect, outerRadius);
+      ctx.fill();
+
+      if (dec.toolbarRect) {
+        ctx.save();
+        roundedRect(ctx, outerRect, outerRadius);
+        ctx.clip();
+
+        ctx.fillStyle = dec.toolbarColor || (dec.isDark ? '#313238' : '#f4f4f6');
+        ctx.fillRect(dec.toolbarRect.x, dec.toolbarRect.y, dec.toolbarRect.width, dec.toolbarRect.height);
+
+        if (dec.separatorColor) {
+          ctx.strokeStyle = dec.separatorColor;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(dec.toolbarRect.x, dec.toolbarRect.y + dec.toolbarRect.height);
+          ctx.lineTo(dec.toolbarRect.x + dec.toolbarRect.width, dec.toolbarRect.y + dec.toolbarRect.height);
+          ctx.stroke();
+        }
+
+        const buttons2D = Array.isArray(dec.controls) ? dec.controls : (dec.controls?.buttons || []);
+        for (const ctrl of buttons2D) {
+          ctx.fillStyle = ctrl.color;
+          ctx.beginPath();
+          const cx = ctrl.cx ?? (ctrl.x + (ctrl.radius ?? (ctrl.width / 2)));
+          const cy = ctrl.cy ?? (ctrl.y + (ctrl.radius ?? (ctrl.height / 2)));
+          const r = ctrl.radius ?? (ctrl.width / 2);
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (dec.title) {
+          ctx.fillStyle = dec.glyphColor || '#7a7c84';
+          ctx.font = '12px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(dec.title, dec.toolbarRect.x + dec.toolbarRect.width / 2, dec.toolbarRect.y + dec.toolbarRect.height / 2);
+        }
+
+        if (dec.addressFieldRect && dec.browserAddress) {
+          const af = dec.addressFieldRect;
+          ctx.fillStyle = dec.fieldColor || (dec.isDark ? '#1b1c20' : '#ffffff');
+          roundedRect(ctx, af, af.cornerRadius ?? 4);
+          ctx.fill();
+
+          ctx.fillStyle = dec.glyphColor || '#7a7c84';
+          ctx.font = '11px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(dec.browserAddress, af.x + af.width / 2, af.y + af.height / 2);
+        }
+
+        ctx.restore();
+      }
+
+      const contentRect = screen.finalRect;
+      const contentRadius = dec.contentCornerRadius ?? screen.cornerRadius;
+      ctx.save();
+      roundedRect(ctx, contentRect, contentRadius);
+      ctx.clip();
+      this.drawScreenContent(ctx, contentRect, frame, screen.crop);
+      if (screen.mosaics && screen.mosaics.length) {
+        this.drawMosaics(ctx, screen.mosaics, contentRect, frame);
+      }
+      ctx.restore();
+    } else {
+      const rect = screen.finalRect;
+      const border = screen.borderWidth || 0;
+      const outer = border > 0
+        ? { x: rect.x - border, y: rect.y - border, width: rect.width + border * 2, height: rect.height + border * 2 }
+        : rect;
+      this.drawShadow(ctx, outer, screen.cornerRadius + border, screen.shadow);
+      if (border > 0) {
+        ctx.fillStyle = screen.borderColor || '#FFFFFF';
+        roundedRect(ctx, outer, screen.cornerRadius + border);
+        ctx.fill();
+      }
+      ctx.save();
+      roundedRect(ctx, rect, screen.cornerRadius);
+      ctx.clip();
+      this.drawScreenContent(ctx, rect, frame, screen.crop);
+      if (screen.mosaics && screen.mosaics.length) {
+        this.drawMosaics(ctx, screen.mosaics, rect, frame);
+      }
+      ctx.restore();
+    }
   }
 
   drawRing(ctx, x, y, ring, color) {
@@ -182,8 +635,19 @@ class Compositor {
   drawCursor(ctx, screen, cursor) {
     ctx.save();
     // 光标属于屏幕内容：跟着屏幕卡片一起被圆角裁切。
-    roundedRect(ctx, screen.finalRect, screen.cornerRadius);
-    ctx.clip();
+    if (screen.projectedQuad && (screen.rotationX || screen.rotationY || screen.rotationZ)) {
+      const quad = screen.projectedQuad;
+      ctx.beginPath();
+      ctx.moveTo(quad.topLeft.x, quad.topLeft.y);
+      ctx.lineTo(quad.topRight.x, quad.topRight.y);
+      ctx.lineTo(quad.bottomRight.x, quad.bottomRight.y);
+      ctx.lineTo(quad.bottomLeft.x, quad.bottomLeft.y);
+      ctx.closePath();
+      ctx.clip();
+    } else {
+      roundedRect(ctx, screen.finalRect, screen.cornerRadius);
+      ctx.clip();
+    }
     if (cursor.click) {
       const color = cursor.clickColor || '#FFFFFF';
       this.drawRing(ctx, cursor.x, cursor.y, cursor.click.primary, color);
@@ -212,30 +676,97 @@ class Compositor {
   }
 
   drawCamera(ctx, camera, frame) {
+    if (!camera || (camera.opacity !== undefined && camera.opacity <= 0.001)) return;
+    ctx.save();
+    if (camera.opacity !== undefined && camera.opacity < 1) {
+      ctx.globalAlpha = Math.min(Math.max(camera.opacity, 0), 1);
+    }
     const rect = camera.rect;
-    const border = camera.borderWidth;
-    const outer = { x: rect.x - border, y: rect.y - border, width: rect.width + border * 2, height: rect.height + border * 2 };
-    this.drawShadow(ctx, outer, camera.cornerRadius + border, camera.shadow);
-    if (border > 0) {
-      ctx.fillStyle = '#FFFFFF';
-      roundedRect(ctx, outer, camera.cornerRadius + border);
-      ctx.fill();
+    const border = camera.borderWidth || 0;
+    const outer = border > 0
+      ? { x: rect.x - border, y: rect.y - border, width: rect.width + border * 2, height: rect.height + border * 2 }
+      : rect;
+    if ((camera.fullscreenProgress ?? 0) < 0.999) {
+      this.drawShadow(ctx, outer, camera.cornerRadius + border, camera.shadow);
+      if (border > 0) {
+        ctx.fillStyle = '#FFFFFF';
+        roundedRect(ctx, outer, camera.cornerRadius + border);
+        ctx.fill();
+      }
     }
     ctx.save();
     roundedRect(ctx, rect, camera.cornerRadius);
     ctx.clip();
-    // 居中等比填充（aspect-fill）。
-    const source = frameSize(frame);
-    const scale = Math.max(rect.width / source.width, rect.height / source.height);
-    const w = source.width * scale;
-    const h = source.height * scale;
-    if (camera.isMirrored) {
-      ctx.translate(rect.x * 2 + rect.width, 0);
-      ctx.scale(-1, 1);
+    if (frame) {
+      const source = frameSize(frame);
+      const scale = Math.max(rect.width / Math.max(source.width, 1), rect.height / Math.max(source.height, 1));
+      const w = source.width * scale;
+      const h = source.height * scale;
+      if (camera.isMirrored) {
+        ctx.translate(rect.x * 2 + rect.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(frame, rect.x + (rect.width - w) / 2, rect.y + (rect.height - h) / 2, w, h);
+    } else {
+      ctx.fillStyle = '#1b1c20';
+      ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
     }
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(frame, rect.x + (rect.width - w) / 2, rect.y + (rect.height - h) / 2, w, h);
     ctx.restore();
+    ctx.restore();
+  }
+
+  drawStickers(ctx, stickers, frames) {
+    if (!stickers || !stickers.length) return;
+    for (const sticker of stickers) {
+      if (sticker.opacity <= 0.001 || sticker.width <= 0 || sticker.height <= 0) continue;
+      ctx.save();
+      ctx.translate(sticker.centerX ?? sticker.x, sticker.centerY ?? sticker.y);
+      if (sticker.rotation) ctx.rotate(sticker.rotation * Math.PI / 180);
+      ctx.globalAlpha = Math.min(Math.max(sticker.opacity, 0), 1);
+
+      const halfW = sticker.width / 2;
+      const halfH = sticker.height / 2;
+      const sRect = { x: -halfW, y: -halfH, width: sticker.width, height: sticker.height };
+      const r = Math.min(sticker.cornerRadius || 0, halfW, halfH);
+
+      if (sticker.shadowOpacity > 0 && sticker.shadowRadius > 0) {
+        ctx.save();
+        ctx.shadowColor = `rgba(0,0,0,${sticker.shadowOpacity})`;
+        ctx.shadowBlur = sticker.shadowRadius * 2;
+        ctx.shadowOffsetX = sticker.shadowOffsetX || 0;
+        ctx.shadowOffsetY = sticker.shadowOffsetY || 0;
+        ctx.fillStyle = '#000000';
+        roundedRect(ctx, sRect, r);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      if (sticker.borderWidth > 0) {
+        const b = sticker.borderWidth;
+        const bOuter = { x: sRect.x - b, y: sRect.y - b, width: sRect.width + b * 2, height: sRect.height + b * 2 };
+        ctx.fillStyle = sticker.borderColor || '#FFFFFF';
+        roundedRect(ctx, bOuter, r + b);
+        ctx.fill();
+      }
+
+      ctx.save();
+      roundedRect(ctx, sRect, r);
+      ctx.clip();
+
+      const img = (frames && frames.stickers && frames.stickers[sticker.id]) ||
+        (sticker.relativePath && this.images && this.images.get(sticker.relativePath)) ||
+        sticker.image;
+
+      if (img) {
+        ctx.drawImage(img, sRect.x, sRect.y, sRect.width, sRect.height);
+      } else {
+        ctx.fillStyle = sticker.clip?.backgroundColor || '#2A2B30';
+        ctx.fillRect(sRect.x, sRect.y, sRect.width, sRect.height);
+      }
+      ctx.restore();
+      ctx.restore();
+    }
   }
 
   /// frames: { screen, camera }，可以是 <video> 或 WebCodecs VideoFrame。
@@ -248,8 +779,15 @@ class Compositor {
     ctx.drawImage(this.backgroundLayer(project.canvas, width, height, scene.styleScale), 0, 0);
     this.drawScreen(ctx, scene.screen, frames.screen);
     if (scene.cursor) this.drawCursor(ctx, scene.screen, scene.cursor);
-    if (scene.camera && frames.camera) this.drawCamera(ctx, scene.camera, frames.camera);
+    if (scene.camera && (frames.camera || frames.drawCameraPlaceholder)) this.drawCamera(ctx, scene.camera, frames.camera);
+    if (scene.stickers && scene.stickers.length) this.drawStickers(ctx, scene.stickers, frames);
   }
 }
 
-module.exports = { Compositor };
+module.exports = {
+  Compositor,
+  createOffscreenCanvas,
+  createMockCanvas,
+  renderPerspectiveMesh,
+  drawTexturedTriangle,
+};

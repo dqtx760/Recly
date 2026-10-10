@@ -27,9 +27,9 @@
     const { element } = require('./common');
     const { ipcRenderer } = require('electron');
     const grid = document.getElementById('grid');
-    async function load() {
+    async function load(refresh = false) {
       grid.replaceChildren(element('div', { id: 'empty' }, '正在读取窗口列表…'));
-      const windows = await ipcRenderer.invoke('recorder:windows');
+      const windows = await ipcRenderer.invoke('recorder:windows', refresh);
       if (!windows.length) {
         grid.replaceChildren(element('div', { id: 'empty' }, '没有找到可录制的窗口。最小化的窗口不会出现在这里，先把它还原再点「刷新」。'));
         return;
@@ -38,7 +38,7 @@
         element('div', { class: 'thumb', style: item.thumbnail ? `background-image:url(${item.thumbnail})` : '' }),
         element('span', {}, item.title))));
     }
-    document.getElementById('refresh').addEventListener('click', load);
+    document.getElementById('refresh').addEventListener('click', () => load(true));
     window.addEventListener('keydown', (event) => { if (event.key === 'Escape') window.close(); });
     load();
   </script>

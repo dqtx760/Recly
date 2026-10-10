@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-Hans">
 <meta charset="utf-8">
-<title>DogSC</title>
+<title>Recly</title>
 <link rel="stylesheet" href="common.css">
 <link rel="stylesheet" href="editor.css">
 <body>
@@ -9,13 +9,20 @@
     <button class="btn ghost icon-only" id="open-library" title="项目库"></button>
     <input id="project-name" spellcheck="false" title="点击改名">
     <span class="muted" id="save-state"></span>
+    <span class="muted" id="preview-status"></span>
     <span class="spacer"></span>
     <div class="group">
       <button class="btn ghost icon-only" id="undo" title="撤销（Ctrl+Z）"></button>
       <button class="btn ghost icon-only" id="redo" title="重做（Ctrl+Shift+Z）"></button>
     </div>
+    <button class="btn ghost" id="scene-preset" title="场景预设">场景预设 ▾</button>
     <button class="btn" id="shortcuts" title="快捷键">快捷键</button>
     <button class="btn primary" id="export"></button>
+    <div class="window-controls">
+      <button class="win-btn" id="editor-min" title="最小化"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      <button class="win-btn" id="editor-max" title="最大化 / 还原"><svg width="12" height="12" viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      <button class="win-btn close" id="editor-close" title="关闭"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    </div>
   </header>
 
   <main class="workspace">

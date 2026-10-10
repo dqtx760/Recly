@@ -187,11 +187,10 @@ class RecordingSession {
       fs.rmSync(track.file, { force: true });
     }
 
-    onStage('正在生成索引与缩略图');
+    onStage('正在生成视频索引');
     fs.writeFileSync(inMedia('screen.index.json'), JSON.stringify(await media.buildVideoIndex(inMedia('screen.mp4'))));
-    projectMedia.thumbnails = await media.makeThumbnails(inMedia('screen.mp4'), inMedia('thumbnails.jpg'), duration)
-      .then((thumbnails) => ({ ...thumbnails, file: `media/${thumbnails.file}` }))
-      .catch(() => null);
+    // 缩略图不应阻塞录制完成后的编辑器打开；项目先以无封面状态落盘，后台补写缩略图。
+    projectMedia.thumbnails = null;
 
     const events = toSourceTimeline(pointerEvents, this.firstFrameTime, duration);
     fs.writeFileSync(inMedia('pointer.json'), JSON.stringify({ hasClicks: this.pointer.hasClickSupport, events }));
@@ -208,7 +207,20 @@ class RecordingSession {
     project.export.frameRate = this.frameRate >= 60 ? 60 : 30;
     fs.writeFileSync(path.join(this.directory, 'project.json'), JSON.stringify(project, null, 2));
     fs.rmSync(raw, { force: true });
-    return { directory: this.directory, project };
+    const thumbnailsReady = media.makeThumbnails(inMedia('screen.mp4'), inMedia('thumbnails.jpg'), duration)
+      .then((thumbnails) => {
+        const target = path.join(this.directory, 'project.json');
+        const current = JSON.parse(fs.readFileSync(target, 'utf8'));
+        current.media.thumbnails = { ...thumbnails, file: `media/${thumbnails.file}` };
+        fs.writeFileSync(`${target}.thumbnails.tmp`, JSON.stringify(current, null, 2));
+        fs.renameSync(`${target}.thumbnails.tmp`, target);
+        return true;
+      })
+      .catch((error) => {
+        console.warn('[DogSC] 缩略图生成失败：', error.message || error);
+        return false;
+      });
+    return { directory: this.directory, project, thumbnailsReady };
   }
 }
 

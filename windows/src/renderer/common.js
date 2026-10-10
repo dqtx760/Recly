@@ -4,6 +4,7 @@
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
+const i18n = require('./i18n');
 const query = new URLSearchParams(location.search);
 const resourcesDirectory = query.get('resources');
 
@@ -78,6 +79,30 @@ function element(tag, attributes = {}, ...children) {
   return node;
 }
 
+
+async function checkUpdate(options) {
+  const { ipcRenderer } = require('electron');
+  return ipcRenderer.invoke('app:check-update', options);
+}
+
+async function openExternalUrl(url) {
+  const { ipcRenderer } = require('electron');
+  return ipcRenderer.invoke('app:open-url', url);
+}
+
 loadFonts();
 
-module.exports = { query, resourcesDirectory, icon, formatTime, element, fileUrl: (file) => pathToFileURL(file).href };
+module.exports = {
+  query,
+  resourcesDirectory,
+  icon,
+  formatTime,
+  element,
+  fileUrl: (file) => pathToFileURL(file).href,
+  checkUpdate,
+  openExternalUrl,
+  t: i18n.t,
+  getLocale: i18n.getLocale,
+  setLocale: i18n.setLocale,
+  i18n,
+};

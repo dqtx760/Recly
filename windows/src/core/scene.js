@@ -4,7 +4,10 @@
 
 const { clamp, CAMERA_SHAPES } = require('./model');
 const { sampleZoom, viewportTransform, activeClipIndex, adjacentPreviousClip } = require('./zoom');
-
+const { NormalizedCrop, screenDecoration } = require('./crop-frame');
+const { ScreenProjection } = require('./projection');
+const { openingSample, evaluateMosaics, evaluateStickers } = require('./opening-overlay');
+const { evaluateCameraMotion, resolveCameraState } = require('./camera-motion');
 const CURSOR_CANONICAL_HEIGHT = 44;
 const CANONICAL_SHORT_EDGE = 1080;
 
@@ -20,19 +23,25 @@ function aspectFit(aspectRatio, width, height) {
 }
 
 function evaluateScreen(project, time, width, height, sourceAspect, zoomClips, pointerTrack) {
-  const canvas = project.canvas;
+  const canvas = project.canvas || {};
   const scale = canonicalStyleScale(width, height);
-  const padding = clamp(canvas.padding * scale, 0, Math.min(width, height) * 0.42);
-  const fitted = aspectFit(sourceAspect, Math.max(width - padding * 2, 2), Math.max(height - padding * 2, 2));
+  const padding = clamp((canvas.padding ?? 100) * scale, 0, Math.min(width, height) * 0.42);
+  const rawCrop = canvas.crop;
+  const crop = rawCrop
+    ? (rawCrop instanceof NormalizedCrop ? rawCrop.clamped() : new NormalizedCrop(rawCrop.x, rawCrop.y, rawCrop.width, rawCrop.height).clamped())
+    : new NormalizedCrop();
+  const croppedAspect = Math.max((sourceAspect || 16 / 9) * crop.width / Math.max(crop.height, 0.0001), 0.01);
+  const fitted = aspectFit(croppedAspect, Math.max(width - padding * 2, 2), Math.max(height - padding * 2, 2));
   const fittedRect = { x: (width - fitted.width) / 2, y: (height - fitted.height) / 2, width: fitted.width, height: fitted.height };
 
-  const manualScale = clamp(canvas.contentScale, 0.2, 4);
-  const baseBorderWidth = clamp(canvas.borderWidth, 0, 60) * scale * manualScale;
+  const manualScale = clamp(canvas.contentScale ?? 1, 0.2, 4);
+  const baseBorderWidth = clamp(canvas.borderWidth ?? 0, 0, 60) * scale * manualScale;
   const scaledWidth = fittedRect.width * manualScale;
   const scaledHeight = fittedRect.height * manualScale;
+  const contentPos = canvas.contentPosition || { x: 0.5, y: 0.5 };
   // 定位的是带外描边的完整卡片：贴边时描边仍留在画布内。
-  const offsetX = (canvas.contentPosition.x - 0.5) * (width - (scaledWidth + baseBorderWidth * 2));
-  const offsetY = (canvas.contentPosition.y - 0.5) * (height - (scaledHeight + baseBorderWidth * 2));
+  const offsetX = (contentPos.x - 0.5) * (width - (scaledWidth + baseBorderWidth * 2));
+  const offsetY = (contentPos.y - 0.5) * (height - (scaledHeight + baseBorderWidth * 2));
   const baseRect = {
     x: fittedRect.x + fittedRect.width / 2 - scaledWidth / 2 + offsetX,
     y: fittedRect.y + fittedRect.height / 2 - scaledHeight / 2 + offsetY,
@@ -69,48 +78,92 @@ function evaluateScreen(project, time, width, height, sourceAspect, zoomClips, p
   };
   const magnification = scale * manualScale * viewport.scale;
   return {
+    crop,
+    fittedRect,
     baseRect,
     finalRect,
     zoom,
     viewport,
-    cornerRadius: keepsCanvasCovered ? 0 : Math.max(canvas.cornerRadius, 0) * magnification,
+    cornerRadius: keepsCanvasCovered ? 0 : Math.max(canvas.cornerRadius ?? 24, 0) * magnification,
     borderWidth: baseBorderWidth * viewport.scale,
-    borderColor: canvas.borderColor,
-    shadow: canvas.shadowStrength > 0 && !keepsCanvasCovered
-      ? { opacity: canvas.shadowStrength, radius: 22 * magnification, offsetY: 12 * magnification }
+    borderColor: canvas.borderColor || '#FFFFFF',
+    shadow: (canvas.shadowStrength ?? 0.28) > 0 && !keepsCanvasCovered
+      ? { opacity: canvas.shadowStrength ?? 0.28, radius: 22 * magnification, offsetY: 12 * magnification }
       : null,
   };
 }
 
-function evaluateCamera(style, cameraAspect, screenZoomScale, width, height) {
+function openingRect(rect, sample) {
+  if (!sample || (sample.scale === 1 && (!sample.offset || (sample.offset.x === 0 && sample.offset.y === 0)))) {
+    return { ...rect };
+  }
+  const width = rect.width * (sample.scale ?? 1);
+  const height = rect.height * (sample.scale ?? 1);
+  const offX = sample.offset?.x ?? 0;
+  const offY = sample.offset?.y ?? 0;
+  return {
+    x: rect.x + rect.width / 2 - width / 2 + offX,
+    y: rect.y + rect.height / 2 - height / 2 + offY,
+    width,
+    height,
+  };
+}
+
+function evaluateCamera(style, cameraAspect, screenZoomScale, width, height, cameraMotionSample, cameraOpening) {
   const styleScale = canonicalStyleScale(width, height);
   const base = Math.min(width, height);
-  const shape = CAMERA_SHAPES[style.shape] || CAMERA_SHAPES.square;
-  const aspect = shape.aspect || Math.max(cameraAspect, 0.01);
-  const cornerFraction = style.shape === 'circle' ? 0.5 : 0.5 * style.roundness;
+  const sample = cameraMotionSample || resolveCameraState(style, cameraAspect, width / height);
 
-  // 屏幕放大时摄像头按 scaleDuringZoom 让位。
   const zoomProgress = clamp((screenZoomScale - 1) / 0.565, 0, 1);
-  const zoomScale = 1 + (style.scaleDuringZoom - 1) * zoomProgress;
-  const preferredHeight = Math.min(Math.max(base * style.size * zoomScale, 72 * styleScale), base * 1.2);
-  const preferredWidth = preferredHeight * aspect;
-  const fitScale = Math.min(1, width * 1.2 / Math.max(preferredWidth, 0.0001), height * 1.2 / Math.max(preferredHeight, 0.0001));
+  const zoomScale = 1 + ((style.scaleDuringZoom ?? 0.7) - 1) * zoomProgress;
+  const preferredHeight = Math.min(
+    Math.max(base * (sample.size ?? 0.29) * zoomScale, 72 * styleScale),
+    base * 1.2
+  );
+  const preferredWidth = preferredHeight * Math.max(sample.aspectRatio ?? 1, 0.01);
+  const fitScale = Math.min(
+    1,
+    width * 1.2 / Math.max(preferredWidth, 0.0001),
+    height * 1.2 / Math.max(preferredHeight, 0.0001)
+  );
   const cameraWidth = preferredWidth * fitScale;
   const cameraHeight = preferredHeight * fitScale;
-  const rect = {
-    x: clamp(style.position.x, 0, 1) * (width - cameraWidth),
-    y: clamp(style.position.y, 0, 1) * (height - cameraHeight),
+  const posX = clamp(sample.position?.x ?? 0.96, 0, 1);
+  const posY = clamp(sample.position?.y ?? 0.47, 0, 1);
+  const shapedRect = {
+    x: posX * (width - cameraWidth),
+    y: posY * (height - cameraHeight),
     width: cameraWidth,
     height: cameraHeight,
   };
+  const fullscreenProgress = clamp(sample.fullscreenProgress ?? 0, 0, 1);
+  const baseRect = {
+    x: shapedRect.x + (0 - shapedRect.x) * fullscreenProgress,
+    y: shapedRect.y + (0 - shapedRect.y) * fullscreenProgress,
+    width: shapedRect.width + (width - shapedRect.width) * fullscreenProgress,
+    height: shapedRect.height + (height - shapedRect.height) * fullscreenProgress,
+  };
+
+  const rect = cameraOpening ? openingRect(baseRect, cameraOpening) : baseRect;
+  const cornerFraction = clamp(sample.cornerFraction ?? 0.25, 0, 0.5);
+  const openingScale = cameraOpening?.scale ?? 1;
+  const openingOpacity = cameraOpening?.opacity ?? 1;
+  const radius = Math.min(rect.width, rect.height) * cornerFraction * (1 - fullscreenProgress);
+
   return {
     rect,
-    cornerRadius: Math.min(rect.width, rect.height) * clamp(cornerFraction, 0, 0.5),
-    borderWidth: clamp(style.borderWidth, 0, 18) * styleScale,
-    shadow: style.shadowStrength > 0
-      ? { opacity: style.shadowStrength, radius: 14 * styleScale, offsetY: 8 * styleScale }
+    cornerRadius: radius * openingScale,
+    borderWidth: clamp(style.borderWidth ?? 3, 0, 18) * styleScale * (1 - fullscreenProgress) * openingScale,
+    shadow: (style.shadowStrength ?? 0.25) > 0 && fullscreenProgress < 0.99
+      ? {
+          opacity: (style.shadowStrength ?? 0.25) * openingOpacity,
+          radius: 14 * styleScale * openingScale,
+          offsetY: 8 * styleScale * openingScale,
+        }
       : null,
-    isMirrored: style.isMirrored,
+    isMirrored: Boolean(style.isMirrored),
+    opacity: clamp(sample.opacity ?? 1, 0, 1) * openingOpacity,
+    fullscreenProgress,
   };
 }
 
@@ -172,9 +225,18 @@ function evaluateCursor(project, time, screen, width, height, pointerTrack) {
   const shortEdge = Math.min(width, height);
   // 光标大小只跟画布短边走，不随屏幕缩放放大。
   const referenceHeight = Math.max(shortEdge * CURSOR_CANONICAL_HEIGHT / CANONICAL_SHORT_EDGE * clamp(style.size, 0.25, 6), 1);
+  let curX = screen.finalRect.x + x * screen.finalRect.width;
+  let curY = screen.finalRect.y + y * screen.finalRect.height;
+  if (screen.projectedQuad && (screen.rotationX || screen.rotationY || screen.rotationZ)) {
+    const projectedPoint = screen.projectedQuad.project({ x: curX, y: curY }, screen.finalRect);
+    if (projectedPoint && Number.isFinite(projectedPoint.x) && Number.isFinite(projectedPoint.y)) {
+      curX = projectedPoint.x;
+      curY = projectedPoint.y;
+    }
+  }
   return {
-    x: screen.finalRect.x + x * screen.finalRect.width,
-    y: screen.finalRect.y + y * screen.finalRect.height,
+    x: curX,
+    y: curY,
     height: referenceHeight,
     appearance: style.appearance === 'automatic' ? sample.recordedCursor : style.appearance,
     shadow: { opacity: 0.42, radius: Math.max(referenceHeight * 1.5 / 44, 0.5), offsetY: Math.max(referenceHeight / 44, 0.5) },
@@ -186,15 +248,207 @@ function evaluateCursor(project, time, screen, width, height, pointerTrack) {
 }
 
 /// time 为素材时间（秒）。zoomClips 需先经过 zoom.orderedClips。
-function evaluateScene(project, { time, width, height, sourceAspect, cameraAspect, zoomClips, pointerTrack }) {
+function evaluateScene(project, options = {}) {
+  const {
+    time = 0,
+    width = 1920,
+    height = 1080,
+    sourceAspect = 16 / 9,
+    cameraAspect = null,
+    zoomClips = [],
+    pointerTrack = null,
+  } = options;
   const w = Math.max(width, 2);
   const h = Math.max(height, 2);
-  const screen = evaluateScreen(project, time, w, h, sourceAspect, zoomClips, pointerTrack);
-  const camera = cameraAspect && !project.camera.isHidden
-    ? evaluateCamera(project.camera, cameraAspect, screen.zoom.scale, w, h)
-    : null;
-  const cursor = evaluateCursor(project, time, screen, w, h, pointerTrack);
-  return { width: w, height: h, styleScale: canonicalStyleScale(w, h), screen, camera, cursor };
+  const sampleTime = Math.max(time, 0);
+  const styleScale = canonicalStyleScale(w, h);
+
+  // 1. 评估屏幕卡片基础几何与裁切
+  const screen = evaluateScreen(project, sampleTime, w, h, sourceAspect, zoomClips, pointerTrack);
+
+  // 2. 开场序列
+  const openingSeq = project.openingSequence;
+  const hasOpeningSticker = Boolean(
+    (options.stickerClips || project.timeline?.stickerClips)?.some(clip => {
+      const start = clip.timing?.startTime ?? clip.startTime ?? 0;
+      const end = clip.timing?.endTime ?? (start + (clip.timing?.duration ?? clip.duration ?? 0));
+      return start <= 0.0001 && end > 0.0001;
+    })
+  );
+  const hasOpeningCamera = Boolean(
+    (cameraAspect || project.media?.camera) && !project.camera?.isHidden
+  );
+  const seqElementOrder = openingSeq?.elementOrder || ['screen', 'camera', 'stickers'];
+  const seqIncluded = new Set(openingSeq?.includedElements || ['screen', 'camera', 'stickers']);
+  const availableOpeningElements = seqElementOrder.filter(elem => {
+    if (!seqIncluded.has(elem)) return false;
+    if (elem === 'screen') return true;
+    if (elem === 'camera') return hasOpeningCamera;
+    if (elem === 'stickers') return hasOpeningSticker;
+    return false;
+  });
+
+  const screenOpening = openingSample(
+    'screen',
+    openingSeq,
+    availableOpeningElements,
+    sampleTime,
+    w,
+    h
+  );
+
+  if (screenOpening && (screenOpening.scale !== 1 || (screenOpening.offset && (screenOpening.offset.x !== 0 || screenOpening.offset.y !== 0)))) {
+    screen.finalRect = openingRect(screen.finalRect, screenOpening);
+    screen.cornerRadius *= screenOpening.scale;
+    screen.borderWidth *= screenOpening.scale;
+    if (screen.shadow) {
+      screen.shadow.radius *= screenOpening.scale;
+      screen.shadow.offsetY *= screenOpening.scale;
+    }
+  }
+
+  // 3. 屏幕外框与装饰
+  const screenFrameStyle = project.canvas?.screenFrame || 'none';
+  const decoration = screenDecoration({
+    style: screenFrameStyle,
+    frameScale: project.canvas?.screenFrameScale ?? 1,
+    toolbarScale: project.canvas?.screenFrameToolbarScale ?? 1,
+    outerCornerRadius: project.canvas?.screenFrameOuterCornerRadius,
+    contentCornerRadius: project.canvas?.screenFrameContentCornerRadius,
+    title: project.canvas?.screenFrameTitle ?? '',
+    browserAddress: project.canvas?.screenFrameBrowserAddress ?? '',
+    geometry: screen,
+    styleScale,
+  });
+
+  // 4. 3D 屏幕投影几何
+  const baseRotationX = project.canvas?.rotationX ?? 0;
+  const baseRotationY = project.canvas?.rotationY ?? 0;
+  const baseRotationZ = project.canvas?.rotationZ ?? 0;
+  const basePerspective = project.canvas?.perspective ?? 0;
+  const rotationX = baseRotationX + (screenOpening?.rotationX || 0);
+  const rotationY = baseRotationY + (screenOpening?.rotationY || 0);
+  const rotationZ = baseRotationZ;
+  const perspective = Math.min(Math.max(basePerspective + (screenOpening?.perspective || 0), 0), 2);
+
+  const projectionRect = (decoration && decoration.outerRect && decoration.style !== 'none')
+    ? decoration.outerRect
+    : screen.finalRect;
+  const anchorNorm = project.canvas?.projectionAnchor || { x: 0.5, y: 0.5 };
+  const projectionAnchor = {
+    x: screen.finalRect.x + screen.finalRect.width * (anchorNorm.x ?? 0.5),
+    y: screen.finalRect.y + screen.finalRect.height * (anchorNorm.y ?? 0.5),
+  };
+
+  const projectedQuad = ScreenProjection.project({
+    rect: projectionRect,
+    rotationX,
+    rotationY,
+    rotationZ,
+    perspective,
+    anchor: projectionAnchor,
+  });
+
+  screen.rotationX = rotationX;
+  screen.rotationY = rotationY;
+  screen.rotationZ = rotationZ;
+  screen.perspective = perspective;
+  screen.decoration = decoration;
+  screen.projectedQuad = projectedQuad;
+
+  // 5. 马赛克覆盖评估
+  const rawMosaicClips = options.mosaicClips || project.timeline?.mosaicClips || [];
+  const mosaics = evaluateMosaics(rawMosaicClips, sampleTime);
+  screen.mosaics = mosaics;
+
+  // 6. 摄像头运动与开场评估
+  const rawCameraClips = options.cameraMotionClips || project.timeline?.cameraMotionClips || [];
+  const cameraOpening = openingSample(
+    'camera',
+    openingSeq,
+    availableOpeningElements,
+    sampleTime,
+    w,
+    h
+  );
+  let camera = null;
+  if (cameraAspect && !project.camera?.isHidden) {
+    const cameraMotionSample = evaluateCameraMotion(
+      rawCameraClips,
+      project.camera,
+      sampleTime,
+      project.motion,
+      cameraAspect,
+      w / h
+    );
+    camera = evaluateCamera(
+      project.camera,
+      cameraAspect,
+      screen.zoom.scale,
+      w,
+      h,
+      cameraMotionSample,
+      cameraOpening
+    );
+  }
+
+  // 7. 贴图评估与开场形变
+  const rawStickerClips = options.stickerClips || project.timeline?.stickerClips || [];
+  const stickerOpening = openingSample(
+    'stickers',
+    openingSeq,
+    availableOpeningElements,
+    sampleTime,
+    w,
+    h
+  );
+  const suppressesInitialEntry = Boolean(
+    openingSeq?.isEnabled && seqIncluded.has('stickers')
+  );
+  let stickers = evaluateStickers(rawStickerClips, sampleTime, w, h, {
+    suppressesInitialEntry,
+  });
+  if (stickerOpening && (stickerOpening.scale !== 1 || (stickerOpening.offset && (stickerOpening.offset.x !== 0 || stickerOpening.offset.y !== 0)) || stickerOpening.opacity !== 1)) {
+    stickers = stickers.map(item => {
+      const updated = { ...item };
+      const offX = stickerOpening.offset?.x ?? 0;
+      const offY = stickerOpening.offset?.y ?? 0;
+      updated.x += offX;
+      updated.y += offY;
+      updated.centerX = updated.x;
+      updated.centerY = updated.y;
+      updated.scale *= stickerOpening.scale;
+      updated.width *= stickerOpening.scale;
+      updated.height *= stickerOpening.scale;
+      updated.opacity *= stickerOpening.opacity;
+      return updated;
+    });
+  }
+
+  // 8. 光标评估
+  const cursor = evaluateCursor(project, sampleTime, screen, w, h, pointerTrack);
+
+  const opening = {
+    ...screenOpening,
+    screen: screenOpening,
+    camera: cameraOpening,
+    stickers: stickerOpening,
+  };
+
+  return {
+    width: w,
+    height: h,
+    styleScale,
+    screen,
+    camera,
+    cursor,
+    crop: screen.crop,
+    decoration,
+    projectedQuad,
+    mosaics,
+    stickers,
+    opening,
+  };
 }
 
 module.exports = { canonicalStyleScale, aspectFit, evaluateScene, evaluateCamera, clickGeometry };

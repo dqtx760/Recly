@@ -14,40 +14,54 @@ let native = null;
 let nativeError = null;
 
 function loadNative() {
-  if (native || nativeError) return native;
-  try {
-    const koffi = require('koffi');
-    const user32 = koffi.load('user32.dll');
-    const dwmapi = koffi.load('dwmapi.dll');
-    const POINT = koffi.struct('POINT', { x: 'long', y: 'long' });
-    const RECT = koffi.struct('RECT', { left: 'long', top: 'long', right: 'long', bottom: 'long' });
-    const CURSORINFO = koffi.struct('CURSORINFO', { cbSize: 'uint32', flags: 'uint32', hCursor: 'uintptr_t', ptScreenPos: POINT });
-    const LoadCursorW = user32.func('uintptr_t __stdcall LoadCursorW(uintptr_t instance, uintptr_t name)');
-    native = {
-      GetCursorPos: user32.func('bool __stdcall GetCursorPos(_Out_ POINT *point)'),
-      GetAsyncKeyState: user32.func('short __stdcall GetAsyncKeyState(int key)'),
-      GetCursorInfo: user32.func('bool __stdcall GetCursorInfo(_Inout_ CURSORINFO *info)'),
-      GetClientRect: user32.func('bool __stdcall GetClientRect(uintptr_t window, _Out_ RECT *rect)'),
-      ClientToScreen: user32.func('bool __stdcall ClientToScreen(uintptr_t window, _Inout_ POINT *point)'),
-      IsWindow: user32.func('bool __stdcall IsWindow(uintptr_t window)'),
-      IsIconic: user32.func('bool __stdcall IsIconic(uintptr_t window)'),
-      ShowWindow: user32.func('bool __stdcall ShowWindow(uintptr_t window, int command)'),
-      SetForegroundWindow: user32.func('bool __stdcall SetForegroundWindow(uintptr_t window)'),
-      DwmGetWindowAttribute: dwmapi.func('long __stdcall DwmGetWindowAttribute(uintptr_t window, uint32 attribute, _Out_ RECT *value, uint32 size)'),
-      cursorInfoSize: koffi.sizeof(CURSORINFO),
-      rectSize: koffi.sizeof(RECT),
-      cursors: new Map(Object.entries(IDC).map(([name, id]) => [String(LoadCursorW(0, id)), name])),
-    };
-  } catch (error) {
-    nativeError = error;
-  }
-  return native;
-}
+   if (native) return native;
+   try {
+     const koffi = require('koffi');
+     const user32 = koffi.load('user32.dll');
+     const struct = (name, fields) => {
+       try { return koffi.type(name); } catch { return koffi.struct(name, fields); }
+     };
+     const POINT = struct('POINT', { x: 'long', y: 'long' });
+     const RECT = struct('RECT', { left: 'long', top: 'long', right: 'long', bottom: 'long' });
+     const CURSORINFO = struct('CURSORINFO', { cbSize: 'uint32', flags: 'uint32', hCursor: 'uintptr_t', ptScreenPos: POINT });
+     const api = {
+       GetCursorPos: user32.func('bool __stdcall GetCursorPos(_Out_ POINT *point)'),
+       GetAsyncKeyState: user32.func('short __stdcall GetAsyncKeyState(int key)'),
+       cursorInfoSize: koffi.sizeof(CURSORINFO),
+       rectSize: koffi.sizeof(RECT),
+       cursors: new Map(),
+     };
+     try {
+       api.GetCursorInfo = user32.func('bool __stdcall GetCursorInfo(_Inout_ CURSORINFO *info)');
+       const LoadCursorW = user32.func('uintptr_t __stdcall LoadCursorW(uintptr_t instance, uintptr_t name)');
+       api.cursors = new Map(Object.entries(IDC).map(([name, id]) => [String(LoadCursorW(0, id)), name]));
+     } catch {
+       // 光标形状是可选信息；位置和鼠标按键仍然必须可用。
+     }
+     try {
+       const dwmapi = koffi.load('dwmapi.dll');
+       api.GetClientRect = user32.func('bool __stdcall GetClientRect(uintptr_t window, _Out_ RECT *rect)');
+       api.ClientToScreen = user32.func('bool __stdcall ClientToScreen(uintptr_t window, _Inout_ POINT *point)');
+       api.IsWindow = user32.func('bool __stdcall IsWindow(uintptr_t window)');
+       api.IsIconic = user32.func('bool __stdcall IsIconic(uintptr_t window)');
+       api.ShowWindow = user32.func('bool __stdcall ShowWindow(uintptr_t window, int command)');
+       api.SetForegroundWindow = user32.func('bool __stdcall SetForegroundWindow(uintptr_t window)');
+       api.DwmGetWindowAttribute = dwmapi.func('long __stdcall DwmGetWindowAttribute(uintptr_t window, uint32 attribute, _Out_ RECT *value, uint32 size)');
+     } catch {
+       // 窗口录制的边界查询失败时仍保留显示器 / 区域录制的鼠标按键记录。
+     }
+     native = api;
+   } catch (error) {
+     if (!nativeError) console.warn('[DogSC] Windows 鼠标输入绑定不可用：', error.message || error);
+     nativeError = error;
+   }
+   return native;
+ }
 
 /// 窗口在屏幕上的物理像素矩形。frame 含标题栏与边框（不含不可见的缩放边），client 只有内容区。
 function windowRects(hwnd) {
   const api = loadNative();
-  if (!api || !api.IsWindow(hwnd)) return null;
+  if (!api || !api.IsWindow || !api.DwmGetWindowAttribute || !api.GetClientRect || !api.ClientToScreen || !api.IsWindow(hwnd)) return null;
   const frame = {};
   if (api.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, frame, api.rectSize) !== 0) return null;
   const clientSize = {};
@@ -62,7 +76,7 @@ function windowRects(hwnd) {
 /// 录制窗口前把它还原并切到前台，保证采集区域里看到的就是它。
 function bringToFront(hwnd) {
   const api = loadNative();
-  if (!api || !api.IsWindow(hwnd)) return false;
+  if (!api || !api.IsWindow || !api.IsIconic || !api.ShowWindow || !api.SetForegroundWindow || !api.IsWindow(hwnd)) return false;
   if (api.IsIconic(hwnd)) api.ShowWindow(hwnd, 9); // SW_RESTORE
   api.SetForegroundWindow(hwnd);
   return true;
@@ -89,7 +103,8 @@ class PointerRecorder {
       const point = {};
       if (!this.api.GetCursorPos(point)) return null;
       const info = { cbSize: this.api.cursorInfoSize, flags: 0, hCursor: 0, ptScreenPos: { x: 0, y: 0 } };
-      const cursor = this.api.GetCursorInfo(info) ? (this.api.cursors.get(String(info.hCursor)) || 'arrow') : 'arrow';
+      const hasCursorInfo = this.api.GetCursorInfo && this.api.GetCursorInfo(info);
+      const cursor = hasCursorInfo ? (this.api.cursors.get(String(info.hCursor)) || 'arrow') : 'arrow';
       return {
         x: point.x,
         y: point.y,

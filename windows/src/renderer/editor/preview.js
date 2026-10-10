@@ -1,8 +1,9 @@
 'use strict';
-// 预览播放：一个以输出时间为准的主时钟，屏幕、摄像头与两条音轨的媒体元素都跟随它。
+// 预览播放：屏幕视频作播放时钟，换算成输出时间后让音轨跟随。
 // 画面由与导出相同的 Compositor 绘制。
 
 const path = require('node:path');
+const { ipcRenderer } = require('electron');
 const { fileUrl } = require('../common');
 const { canvasDimensions, clamp } = require('../../core/model');
 const { evaluateScene } = require('../../core/scene');
@@ -11,6 +12,8 @@ const { Compositor } = require('./render');
 
 const DRIFT_TOLERANCE = 0.14;
 const MAX_PREVIEW_PIXELS = 2560;
+// 给高分辨率视频解码留出余量；导出仍按项目帧率逐帧渲染。
+const PREVIEW_FRAME_INTERVAL = 50;
 
 class Preview {
   constructor(store, canvas, wrap) {
@@ -22,11 +25,17 @@ class Preview {
     this.time = 0; // 输出时间
     this.playing = false;
     this.lastTick = 0;
+    this.lastDraw = 0;
     this.dirty = true;
     this.onTime = () => {};
     this.onState = () => {};
-
     const { media } = store.project;
+    this.onStatus = () => {};
+    this.status = '';
+    this.preparingProxy = Boolean(media.screen && (media.screen.width > 1280 || media.screen.frameRate > 20) && ipcRenderer?.invoke);
+    this.pendingPlay = false;
+    if (this.preparingProxy) this.status = '正在准备流畅预览…';
+
     const make = (tag, track, muted) => {
       if (!track) return null;
       const node = document.createElement(tag);
@@ -56,6 +65,30 @@ class Preview {
     this.layout();
     this.syncMedia(true);
     requestAnimationFrame((now) => this.frame(now));
+    if (this.preparingProxy) this.prepareProxy();
+  }
+
+  async prepareProxy() {
+    try {
+      const file = await ipcRenderer.invoke('project:preview', this.store.directory);
+      if (file) {
+        this.screen.node.src = fileUrl(file);
+        this.screen.node.load();
+        this.syncMedia(true);
+        this.invalidate();
+      }
+      this.status = '';
+    } catch (error) {
+      console.warn('[Recly] 流畅预览准备失败', error);
+      this.status = '预览优化失败，播放可能卡顿';
+    } finally {
+      this.preparingProxy = false;
+      this.onStatus(this.status);
+      if (this.pendingPlay) {
+        this.pendingPlay = false;
+        this.play();
+      }
+    }
   }
 
   get segments() { return this.store.project.timeline.segments; }
@@ -89,6 +122,11 @@ class Preview {
 
   play() {
     if (this.playing) return;
+    if (this.preparingProxy) {
+      this.pendingPlay = true;
+      this.onState();
+      return;
+    }
     if (this.time >= this.duration - 0.02) this.time = 0;
     this.playing = true;
     this.lastTick = performance.now();
@@ -97,13 +135,17 @@ class Preview {
   }
 
   pause() {
+    if (this.pendingPlay) {
+      this.pendingPlay = false;
+      this.onState();
+    }
     if (!this.playing) return;
     this.playing = false;
     this.syncMedia(true);
     this.onState();
   }
 
-  toggle() { if (this.playing) this.pause(); else this.play(); }
+  toggle() { if (this.playing || this.pendingPlay) this.pause(); else this.play(); }
 
   seek(time) {
     this.time = clamp(time, 0, this.duration);
@@ -112,7 +154,11 @@ class Preview {
     this.onTime(this.time);
   }
 
-  /// 把各媒体元素对到主时钟上。播放中只在漂移超过容差时才重新定位，避免频繁 seek 造成卡顿。
+  /// 把各媒体元素对到时间线上。播放中只在漂移超过容差时重新定位。
+  screenWaiting() {
+    return Boolean(this.screen?.inRange && (this.screen.node.seeking || this.screen.node.readyState < 2));
+  }
+
   syncMedia(force) {
     const hit = timeline.locate(this.segments, this.time);
     if (!hit) return;
@@ -138,23 +184,44 @@ class Preview {
         }
         continue;
       }
+      if (this.playing && (name === 'microphone' || name === 'system') && this.screenWaiting()) {
+        if (!node.paused) node.pause();
+        continue;
+      }
       if (this.playing) {
         if (node.playbackRate !== hit.segment.speed) node.playbackRate = hit.segment.speed;
-        if (node.paused || Math.abs(node.currentTime - wanted) > DRIFT_TOLERANCE * Math.max(hit.segment.speed, 1)) {
-          node.currentTime = wanted;
+        const drift = Math.abs(node.currentTime - wanted);
+        const shouldSeek = (force && drift > 0.005) || drift > DRIFT_TOLERANCE * Math.max(hit.segment.speed, 1);
+        if (!node.seeking && (node.paused || shouldSeek)) {
+          if (shouldSeek) node.currentTime = wanted;
           if (node.paused) node.play().catch(() => {});
         }
       } else {
         if (!node.paused) node.pause();
-        if (force || Math.abs(node.currentTime - wanted) > 0.005) node.currentTime = wanted;
+        if (Math.abs(node.currentTime - wanted) > 0.005) node.currentTime = wanted;
       }
     }
   }
 
   frame(now) {
     if (this.playing) {
-      const previousIndex = timeline.locate(this.segments, this.time).index;
-      this.time += (now - this.lastTick) / 1000;
+      if (this.screenWaiting()) {
+        this.lastTick = now;
+        if (!this.screen.node.paused) this.screen.node.pause();
+        this.syncMedia(false);
+        requestAnimationFrame((next) => this.frame(next));
+        return;
+      }
+      const previous = timeline.locate(this.segments, this.time);
+      const previousIndex = previous.index;
+      if (this.screen?.inRange) {
+        const sourceTime = this.screen.node.currentTime + this.screen.offset;
+        const videoTime = previous.outputStart + (sourceTime - previous.segment.sourceStart) / previous.segment.speed;
+        const segmentEnd = previous.outputStart + timeline.segmentOutputDuration(previous.segment);
+        if (Number.isFinite(videoTime)) this.time = Math.max(this.time, Math.min(videoTime, segmentEnd));
+      } else {
+        this.time += (now - this.lastTick) / 1000;
+      }
       this.lastTick = now;
       if (this.time >= this.duration) {
         this.time = this.duration;
@@ -166,14 +233,16 @@ class Preview {
       this.onTime(this.time);
       this.dirty = true;
     }
-    if (this.dirty) {
+    if (this.dirty && (!this.playing || now - this.lastDraw >= PREVIEW_FRAME_INTERVAL)) {
       this.dirty = false;
+      this.lastDraw = now;
       this.draw();
     }
     requestAnimationFrame((next) => this.frame(next));
   }
 
   draw() {
+    if (this.screen && this.screen.node.readyState < 2) return;
     const { project, zoomClips, pointerTrack } = this.store;
     const { media } = project;
     const ready = (track) => (track && track.node.readyState >= 2 ? track.node : null);

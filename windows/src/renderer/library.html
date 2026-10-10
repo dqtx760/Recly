@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-Hans">
 <meta charset="utf-8">
-<title>DogSC 项目库</title>
+<title>Recly 项目库</title>
 <link rel="stylesheet" href="common.css">
 <style>
   body { display: flex; flex-direction: column; }
@@ -21,24 +21,175 @@
   #empty { grid-column: 1 / -1; padding: 80px 20px; text-align: center; color: var(--muted); font-size: 15px; }
   #empty b { display: block; color: var(--ink); font-size: 18px; margin-bottom: 8px; }
   .credit { flex: none; padding: 10px 26px 14px; color: var(--muted); font-size: 12px; user-select: text; }
+  .credit a { color: var(--ink-soft); text-decoration: underline; }
+  .modal { position: fixed; inset: 0; background: rgba(20, 20, 22, 0.38); display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .modal[hidden] { display: none; }
+  .dialog { width: 480px; max-width: calc(100vw - 40px); padding: 22px 24px 20px; }
+  .dialog h2 { margin: 0 0 12px; font-size: 18px; }
+  .dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .about-meta { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 16px; font-size: 13px; color: var(--ink-soft); }
+  .update-status { padding: 12px 14px; border-radius: 10px; background: var(--panel-soft); margin: 12px 0; font-size: 13px; }
+  .update-notes { max-height: 140px; overflow-y: auto; margin-top: 8px; padding: 8px 10px; background: #fff; border-radius: 8px; font-size: 12px; white-space: pre-wrap; color: var(--ink); border: 1px solid var(--line); }
+  .settings-bar { display: flex; align-items: center; gap: 10px; margin: 0 26px 14px; padding: 10px 16px; background: var(--panel); border-radius: 12px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); border: 1px solid var(--line); font-size: 13px; }
+  .settings-label { color: var(--muted); font-weight: 500; flex-shrink: 0; }
+  .settings-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); font-family: Consolas, "Segoe UI Mono", monospace; font-size: 12px; user-select: text; }
 </style>
 <body>
   <header>
     <h1>项目库</h1>
-    <span class="muted" id="root"></span>
     <span class="spacer"></span>
-    <button class="btn" id="open-root"></button>
+    <button class="btn danger" id="trash-all" title="将项目库中的全部项目移到回收站" disabled></button>
+    <button class="btn" id="about-btn"></button>
     <button class="btn primary" id="record"></button>
   </header>
+  <div class="settings-bar" id="settings-bar">
+    <span class="settings-label">存储文件夹：</span>
+    <span class="settings-path" id="root" title=""></span>
+    <button class="btn" id="change-root"></button>
+    <button class="btn" id="open-root"></button>
+  </div>
   <div id="grid"></div>
-  <footer class="credit">DogSC 原创作者：神烦老狗（github.com/laogou717/dogsc）· 本程序为 Windows 适配版，非原作者官方发布 · MIT License</footer>
+  <footer class="credit">Recly · 独立 Windows 适配版 · 公众号：大强同学 · 官网：<a id="site-link" href="https://dqtx.cc">dqtx.cc</a> · MIT License</footer>
+  <div class="modal" id="modal" hidden></div>
   <script>
     'use strict';
-    const { icon, element, formatTime, fileUrl } = require('./common');
-    const { ipcRenderer } = require('electron');
+    const { icon, element, formatTime, fileUrl, checkUpdate, openExternalUrl } = require('./common');
+    const { ipcRenderer, shell } = require('electron');
     const grid = document.getElementById('grid');
+    const trashAllButton = document.getElementById('trash-all');
     document.getElementById('record').innerHTML = `${icon('record')}新建录制`;
-    document.getElementById('open-root').innerHTML = `${icon('folder')}打开项目文件夹`;
+    document.getElementById('change-root').innerHTML = `${icon('folder')}更改文件夹`;
+    document.getElementById('open-root').innerHTML = `${icon('reveal')}打开文件夹`;
+    document.getElementById('about-btn').innerHTML = `${icon('wand')}关于与版本`;
+    document.getElementById('site-link').addEventListener('click', (event) => {
+      event.preventDefault();
+      openExternalUrl('https://dqtx.cc');
+    });
+    trashAllButton.innerHTML = `${icon('trash')}全选删除`;
+    document.getElementById('about-btn').addEventListener('click', () => showAboutModal());
+
+    trashAllButton.addEventListener('click', async () => {
+      if (trashAllButton.disabled) return;
+      trashAllButton.disabled = true;
+      try {
+        const result = await ipcRenderer.invoke('project:trash-all');
+        if (result.failed.length) {
+          window.alert(`有 ${result.failed.length} 个项目未能移到回收站，请稍后重试。`);
+        }
+      } catch (error) {
+        console.error('Failed to trash all projects:', error);
+        window.alert('批量删除失败，请稍后重试。');
+      } finally {
+        await load();
+      }
+    });
+    document.getElementById('change-root').addEventListener('click', async () => {
+      const chosen = await ipcRenderer.invoke('config:choose-projects-root');
+      if (chosen) {
+        await load();
+      }
+    });
+
+    document.getElementById('open-root').addEventListener('click', () => {
+      const currentPath = document.getElementById('root').title || document.getElementById('root').textContent;
+      if (!currentPath) return;
+      if (shell && typeof shell.openPath === 'function') {
+        shell.openPath(currentPath).catch(() => {
+          ipcRenderer.send('project:reveal', currentPath);
+        });
+      } else {
+        ipcRenderer.send('shell:open', currentPath);
+      }
+    });
+
+    async function showAboutModal() {
+      const modal = document.getElementById('modal');
+      const environment = await ipcRenderer.invoke('app:environment');
+      const currentVersion = environment.version || '0.1.2-win.1';
+
+      modal.hidden = false;
+
+      function renderContent(statusHtml, actions) {
+        modal.replaceChildren(element('div', { class: 'dialog card' },
+          element('h2', {}, '关于 Recly (Windows)'),
+          element('div', { class: 'about-meta' },
+            element('div', {}, element('b', {}, '当前版本：'), `v${currentVersion}`),
+            element('div', {}, element('b', {}, '公众号：'), '大强同学'),
+            element('div', {}, element('b', {}, '官网：'),
+              element('a', {
+                style: 'color:var(--accent);cursor:pointer;text-decoration:underline',
+                onclick: () => openExternalUrl('https://dqtx.cc'),
+              }, 'dqtx.cc')
+            ),
+            element('div', {}, element('b', {}, '版本说明：'), '独立 Windows 适配版 · MIT License')
+          ),
+          element('div', { class: 'update-status' }, statusHtml),
+          element('div', { class: 'actions' }, ...actions)
+        ));
+      }
+
+      async function triggerCheck() {
+        renderContent(
+          element('div', {}, '正在读取上游项目发布信息…'),
+          [element('button', { class: 'btn', onclick: () => { modal.hidden = true; } }, '关闭')]
+        );
+
+        const result = await checkUpdate();
+
+        if (result.error) {
+          renderContent(
+            element('div', {},
+              element('b', { style: 'color:var(--danger)' }, '检查更新失败：'),
+              element('div', { style: 'margin-top:4px;color:var(--muted)' }, result.error)
+            ),
+            [
+              element('button', { class: 'btn', onclick: () => triggerCheck() }, '重试'),
+              element('button', { class: 'btn', onclick: () => openExternalUrl(result.releaseUrl) }, '打开发布页'),
+              element('button', { class: 'btn primary', onclick: () => { modal.hidden = true; } }, '关闭')
+            ]
+          );
+        } else if (result.updateAvailable) {
+          const notes = result.releaseNotes ? element('div', { class: 'update-notes' }, result.releaseNotes) : '';
+          renderContent(
+            element('div', {},
+              element('b', { style: 'color:var(--ok)' }, `上游项目发布版本：v${result.latestVersion}`),
+              result.publishedAt ? element('span', { class: 'muted', style: 'margin-left:8px' }, `(${new Date(result.publishedAt).toLocaleDateString()})`) : '',
+              notes
+            ),
+            [
+              element('button', { class: 'btn primary', onclick: () => openExternalUrl(result.releaseUrl) }, '查看上游发布页'),
+              element('button', { class: 'btn', onclick: () => { modal.hidden = true; } }, '暂不更新')
+            ]
+          );
+        } else {
+          renderContent(
+            element('div', {},
+              element('b', { style: 'color:var(--ok)' }, '没有发现版本号更高的上游发布'),
+              element('div', { style: 'margin-top:4px;color:var(--muted)' }, '上游发布信息仅供参考；Windows 适配版请以官网为准。')
+            ),
+            [
+              element('button', { class: 'btn', onclick: () => openExternalUrl(result.releaseUrl) }, '查看发布记录'),
+              element('button', { class: 'btn primary', onclick: () => { modal.hidden = true; } }, '好的')
+            ]
+          );
+        }
+      }
+
+      renderContent(
+        element('div', {}, '上游发布信息仅供参考；Windows 适配版请以官网为准。'),
+        [
+          element('button', { class: 'btn primary', onclick: () => triggerCheck() }, '查看上游版本'),
+          element('button', { class: 'btn', onclick: () => { modal.hidden = true; } }, '关闭')
+        ]
+      );
+    }
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        const modal = document.getElementById('modal');
+        if (modal && !modal.hidden) modal.hidden = true;
+      }
+    });
     document.getElementById('record').addEventListener('click', () => ipcRenderer.send('recorder:show'));
 
     function card(project) {
@@ -64,9 +215,13 @@
 
     async function load() {
       const environment = await ipcRenderer.invoke('app:environment');
-      document.getElementById('root').textContent = environment.projectsRoot;
-      document.getElementById('open-root').onclick = () => ipcRenderer.send('shell:open', environment.projectsRoot);
+      const rootEl = document.getElementById('root');
+      if (rootEl) {
+        rootEl.textContent = environment.projectsRoot || '';
+        rootEl.title = environment.projectsRoot || '';
+      }
       const projects = await ipcRenderer.invoke('project:list');
+      trashAllButton.disabled = projects.length === 0;
       if (!projects.length) {
         grid.replaceChildren(element('div', { id: 'empty' }, element('b', {}, '还没有项目'), '点右上角「新建录制」录一段屏幕，结束后会自动保存到这里。'));
         return;

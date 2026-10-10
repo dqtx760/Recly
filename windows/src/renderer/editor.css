@@ -1,11 +1,17 @@
 /* 编辑器：顶栏 / 左侧分类栏 + 预览 + 右侧检查器 / 底部时间线。 */
 body { display: grid; grid-template-rows: 58px minmax(0, 1fr) 268px; gap: 0; height: 100vh; }
 
-.topbar { display: flex; align-items: center; gap: 10px; padding: 0 18px; }
+.topbar { -webkit-app-region: drag; display: flex; align-items: center; gap: 10px; padding: 0 0 0 18px; }
+.topbar button, .topbar input, .topbar .group { -webkit-app-region: no-drag; }
 .topbar .group { display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: var(--panel); box-shadow: 0 0 0 1px var(--line); }
 #project-name { width: 360px; height: 34px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; font-size: 15px; font-weight: 700; outline: 0; text-overflow: ellipsis; user-select: text; }
 #project-name:hover { background: rgba(0, 0, 0, 0.04); }
 #project-name:focus { background: var(--panel); box-shadow: 0 0 0 2px var(--accent); }
+
+.window-controls { -webkit-app-region: no-drag; display: flex; align-items: center; height: 100%; margin-left: 4px; }
+.win-btn { -webkit-app-region: no-drag; width: 42px; height: 34px; display: inline-flex; align-items: center; justify-content: center; color: var(--ink-soft); border-radius: 0; transition: background 0.1s, color 0.1s; }
+.win-btn:hover { background: rgba(0, 0, 0, 0.06); color: var(--ink); }
+.win-btn.close:hover { background: #E81123; color: #FFFFFF; }
 
 .workspace { display: grid; grid-template-columns: 76px minmax(0, 1fr) 332px; gap: 16px; padding: 4px 18px 14px; min-height: 0; }
 .rail { align-self: center; display: flex; flex-direction: column; gap: 4px; padding: 8px; }
@@ -95,3 +101,15 @@ body { display: grid; grid-template-rows: 58px minmax(0, 1fr) 268px; gap: 0; hei
 .keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; }
 .keys kbd { padding: 2px 8px; border-radius: 7px; background: var(--panel-soft); box-shadow: 0 0 0 1px var(--line); font: 600 12px var(--font); white-space: nowrap; }
 .toast { position: fixed; left: 50%; bottom: 300px; transform: translateX(-50%); padding: 9px 16px; border-radius: 12px; background: rgba(28, 28, 30, 0.92); color: #fff; font-weight: 600; z-index: 60; }
+.preset-dialog { width: 560px; max-width: calc(100vw - 40px); }
+.preset-topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 8px; flex-wrap: wrap; }
+.preset-top-actions { display: flex; align-items: center; gap: 8px; }
+.preset-list { display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow-y: auto; margin-bottom: 14px; }
+.preset-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; background: var(--panel-soft); transition: background 0.15s; }
+.preset-item:hover { background: #ECECEB; }
+.preset-item.active { background: #EFE8DC; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.preset-item .preset-check { width: 18px; font-weight: 700; color: var(--accent); text-align: center; }
+.preset-item .preset-title { flex: 1; font-weight: 600; cursor: pointer; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; user-select: none; }
+.preset-item .preset-badge { padding: 2px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.06); font-size: 11px; color: var(--muted); }
+.preset-item .preset-actions { display: flex; align-items: center; gap: 6px; }
+.preset-item .preset-actions .btn { height: 28px; padding: 0 10px; font-size: 12px; }

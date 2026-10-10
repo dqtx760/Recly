@@ -1,84 +1,83 @@
 <p align="center">
-  <img src="Resources/AppIconMaster.png" width="112" alt="DogSC 应用图标">
+  <img src="windows/assets/AppIconMaster.png" width="96" alt="Recly 图标：紫色底上的荧光绿录制圆环">
 </p>
-
-<h1 align="center">DogSC · Windows 适配版</h1>
-
-<p align="center">录屏与轻量编辑工具：录制、剪辑、运镜，到导出成片。</p>
 
 <p align="center">
-  <a href="windows/README.md"><strong>Windows 版使用说明</strong></a>
-  · <a href="#怎么用">怎么用</a>
-  · <a href="https://github.com/laogou717/dogsc">原版仓库（macOS）</a>
+  <img src="assets/readme/hero.svg" width="100%" alt="Recly Windows 录屏与剪辑工具：录制屏幕、自动运镜、编辑时间线并导出视频">
 </p>
 
-> [!NOTE]
-> **原创作者：神烦老狗（[@laogou717](https://github.com/laogou717)）· 原仓库：[laogou717/dogsc](https://github.com/laogou717/dogsc)**
->
-> DogSC 是神烦老狗原创的 macOS 录屏与编辑工具，以 [MIT License](LICENSE) 开源。产品设计、界面与交互、macOS 版的全部源码和资源都出自原作者，版权归原作者所有。
->
-> 本仓库 fork 自原仓库，只新增了 [`windows/`](windows/README.md) 目录里的 Windows 适配，没有改动原版源码。Windows 适配**不是原作者的官方发布**，同样以 MIT License 开源；使用中遇到的问题请不要提到原仓库。
+<p align="center">
+  <a href="windows/README.md"><strong>使用与开发说明</strong></a>
+  · <a href="https://github.com/laogou717/dogsc">原作者项目 DogSC</a>
+  · <a href="https://dqtx.cc">官网 dqtx.cc</a>
+</p>
 
-## 这是什么
+## 用录屏完成一条视频
 
-原版 DogSC 是 macOS 原生应用（Swift），不能直接在 Windows 上运行。这个仓库把它适配到了 Windows：外壳换成 Electron，采集和编码换成 ffmpeg 与 WebCodecs，原版核心算法（自动缩放、自动跟随镜头、光标平滑、画面布局）按原公式和默认参数移植。
+Recly 是一款面向 Windows 的录屏与轻量剪辑工具。它把录制、自动跟随运镜、时间线编辑和导出放在一条工作流里，适合制作软件演示、操作教程和产品讲解。
 
-录制 → 剪辑 → 运镜 → 导出 这条主线可以完整走通。
+![Recly 的悬浮录制条：选择屏幕、窗口或区域，控制麦克风与摄像头后开始录制](windows/docs/images/recorder.png)
 
-![DogSC Windows 版悬浮录制条](windows/docs/images/recorder.png)
+![Recly 编辑器：预览画面、调整运镜并在时间线上剪辑](windows/docs/images/editor.png)
 
-![DogSC Windows 版编辑器：预览、运镜设置与时间线](windows/docs/images/editor.png)
+## 能做什么
 
-<sub>截图来自 Windows 适配版，素材是自测用的色卡，不含个人录制内容。</sub>
+- **录制屏幕、窗口或自选区域**，可选择麦克风、摄像头和系统声音。
+- **自动运镜跟随操作**：根据点击生成缩放片段，连续操作时镜头跟随指针；也能手动调整焦点、倍率和缓动。
+- **编辑录制内容**：分割、裁短片段、变速、撤销与重做，并在时间线上查看录制内容。
+- **调整画面**：设置画面比例、背景、留白、圆角和阴影，也可调整光标与摄像头画面。
+- **导出成片**：输出 MP4 视频或 M4A 音频，并选择分辨率和帧率。
 
-## 功能
+## 运行
 
-- **录制**：整块屏幕、单个窗口、自选区域；摄像头、麦克风、系统声音各自成轨。录制条和悬浮备忘录不会被录进画面，`Ctrl+Alt+M` 可在录制中留下剪辑标记。
-- **运镜**：按点击自动生成缩放，连续操作时镜头保持并跟随指针；也可以手动添加缩放，调整倍率、焦点、缓动和进出时长。
-- **剪辑**：时间线分割、拖边裁短与恢复、删除、变速，带缩略图，支持撤销和重做。
-- **光标与摄像头**：光标重新合成，可调大小、平滑、静止隐藏和点击反馈；摄像头可调形状、大小、位置、镜像、描边和阴影。
-- **画面设计**：比例、留白、圆角、描边、阴影；背景支持图案、Windows 壁纸、自选图片和纯色。
-- **导出**：MP4 视频与 M4A 音频；原始分辨率、1080p、1440p、4K；30 / 60 FPS；显示进度和预计剩余时间，可随时取消。
+### 直接启动
 
-## 怎么用
+在 Windows 上下载或克隆仓库，双击 `windows/start.bat`。首次启动会安装运行依赖。录制与导出还需要系统可调用的 FFmpeg 6.0 或更新版本：
 
-需要 Windows 10 2004 及以上（建议 Windows 11）、[Node.js](https://nodejs.org) 20 以上，以及 PATH 里的 ffmpeg 6.0 以上完整版：
-
-```bash
+```powershell
 winget install Gyan.FFmpeg
 ```
 
-下载或克隆本仓库后，双击 `windows/start.bat` 即可启动（第一次会自动安装依赖）。也可以用命令行：
+### 从源码启动
 
-```bash
+需要 Windows 10 2004 或更新版本、Node.js 20+ 和 FFmpeg 6.0+。
+
+```powershell
 cd windows
 npm install
 npm start
 ```
 
-想要一个可以直接双击的 `DogSC.exe`，在 `windows` 目录执行 `npm run package`，产物在 `windows/dist/DogSC-win32-x64/`。
+打包 Windows 免安装目录版：
 
-录制的项目保存在 `视频\DogSC\` 下。完整说明、验证方法和目录结构见 [windows/README.md](windows/README.md)。
+```powershell
+npm run package
+```
 
-## 与原版的差异
+程序入口为 `windows/dist/Recly-win32-x64/Recly.exe`。更完整的使用说明、自测方式、目录结构和已知限制见 [`windows/README.md`](windows/README.md)。
 
-- **窗口录制**是把窗口切到前台后按它的边界采集，录制过程中窗口需要留在原位、不被遮挡。
-- **光标外观**是 Windows 的，会按录制时的形状在箭头、手型、文本光标之间切换。
-- **项目文件**与 macOS 版不互通。
-- **尚未移植**：屏幕 3D、开场动效、摄像头运动轨、贴图与画面柔化、裁切、样机外框、场景预设、动态背景、效果复制粘贴、波形显示、片段拖动重排、英文界面、应用内更新。
+## 适配说明
 
-## 原版 DogSC（macOS）
+Recly 的 Windows 版本以 Electron、FFmpeg 和 WebCodecs 实现录制及导出，并移植了原项目中的自动缩放、指针跟随、光标平滑和画面布局等核心逻辑。Windows 的窗口录制通过采集窗口可见区域实现，因此录制时目标窗口需要保持在原位且不被遮挡；Windows 项目文件也不与 macOS 原版互通。
 
-![原版 DogSC 编辑器（macOS）](docs/images/editor.png)
+## 原作者与许可
 
-<sub>上图是原作者的 macOS 版界面，来自原仓库。</sub>
+原版 DogSC 由 [神烦老狗（@laogou717）](https://github.com/laogou717) 创建，原项目和源码见 [laogou717/dogsc](https://github.com/laogou717/dogsc)。原作者未发布或背书 Recly 的 Windows 版本；原版版权声明与 MIT 许可见 [`LICENSE`](LICENSE)。再分发时请保留原作者的版权声明，字体等附带资源遵循各自许可。
 
-原版支持 Apple Silicon Mac、macOS 14 及以上，功能比这个适配版完整。macOS 版的下载、更新说明、从源码构建的方法和问题反馈，都请前往原仓库：**[github.com/laogou717/dogsc](https://github.com/laogou717/dogsc)**。
+## 👨‍💻 关于我
 
-本仓库保留了原版的全部源码（`Sources/`、`Resources/`、`Package.swift` 等），内容与 fork 时的原仓库一致。
+**大强同学（Derek Zhao）**
+AI 工具与工作流实践者 · GitHub 开源项目作者
 
-## 许可与署名
+我在 Windows、AI Agent、Obsidian 和个人网站这些真实场景里，
+把能跑通的工具、Skill 和流程，整理成可复用的开源项目与交付方案。
 
-- 原版 DogSC：Copyright (c) 2026 神烦老狗，[MIT License](LICENSE)。
-- `windows/` 目录下的适配代码同样以 MIT License 发布；再分发时请保留原作者的版权声明。
-- 随附字体采用其自身的许可，详见 [字体说明](Resources/Fonts/README.md) 与 [许可原文](Resources/Fonts/LICENSE.txt)。
+- 文章与工具：[dqtx.cc](https://www.dqtx.cc/) · [os.dqtx.cc](https://os.dqtx.cc/) · [blog.dqtx.cc](https://blog.dqtx.cc/)
+- 关注更新：[B 站](https://space.bilibili.com/491358682/upload/video) · [YouTube](https://www.youtube.com/@dqtx760/videos) · [即刻](https://web.okjike.com/u/24236868-c3e9-49ef-ab93-93a60e1a25db) · [CSDN](https://blog.csdn.net/2402_82616859?type=blog)
+- 公众号：微信搜索「大强同学」
+
+![](https://gitee.com/da-qiang-classmate/typora/raw/master/image/未命名的设计（2）.webp)
+
+卡在安装、配置、报错，或想把 AI 接进自己的工作流，可以直接找我。
+
+**本软件是参考了原作者的代码进行改版，仅支持 Windows。**

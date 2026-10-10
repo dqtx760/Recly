@@ -6,6 +6,7 @@ const zoom = require('../src/core/zoom');
 const { PointerTrack } = require('../src/core/pointer');
 const scene = require('../src/core/scene');
 const timeline = require('../src/core/timeline');
+const presets = require('../src/core/presets');
 
 const near = (actual, expected, tolerance = 1e-6, label = '') =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${label} expected ${expected}, got ${actual}`);
@@ -155,6 +156,31 @@ test('导出尺寸与码率策略', () => {
   assert.equal(model.exportVideoBitrate(1920, 1080, 60), 20_736_000);
   assert.equal(model.exportVideoBitrate(3840, 2160, 60), 82_944_000);
   assert.equal(model.exportVideoBitrate(640, 360, 30), 12_000_000);
+});
+
+test('场景预设：默认预设、规范化与应用到项目', () => {
+  const defaults = presets.getDefaultPresets();
+  assert.equal(defaults.length, 3);
+  const names = defaults.map((p) => p.name);
+  assert.ok(names.includes('极简纯色'));
+  assert.ok(names.includes('黑曜石网格'));
+  assert.ok(names.includes('Mac 桌面'));
+  const defaultPreset = defaults.find((p) => p.isDefault);
+  assert.ok(defaultPreset);
+  assert.equal(defaultPreset.name, '黑曜石网格');
+
+  // 快照创建与匹配
+  const baseProject = model.makeProject({ name: 'Demo', media: { screen: { duration: 10 } }, capture: {} });
+  const custom = presets.createPresetFromProject({ name: '自定义风格', project: baseProject });
+  assert.equal(custom.name, '自定义风格');
+  assert.ok(presets.matchesPreset(custom, baseProject));
+
+  // 应用预设
+  const minimalist = defaults.find((p) => p.name === '极简纯色');
+  const applied = presets.applyPresetToProject(minimalist, baseProject);
+  assert.equal(applied.canvas.padding, 60);
+  assert.equal(applied.camera.shape, 'circle');
+  assert.ok(presets.matchesPreset(minimalist, applied));
 });
 
 console.log(`\n${passed} 项通过`);

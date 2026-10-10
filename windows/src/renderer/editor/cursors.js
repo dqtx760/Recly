@@ -7,6 +7,27 @@ const path = require('node:path');
 
 const SYSTEM_CURSORS = { arrow: 'aero_arrow_xl.cur', hand: 'aero_link_xl.cur' };
 
+function createCursorCanvas(w, h) {
+  if (typeof OffscreenCanvas !== 'undefined') {
+    return new OffscreenCanvas(w, h);
+  }
+  return {
+    width: w,
+    height: h,
+    getContext() {
+      return {
+        beginPath() {},
+        closePath() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+        fill() {},
+        drawImage() {},
+        putImageData() {},
+      };
+    },
+  };
+}
 /// 取 .cur 里最大的 32 位位图，裁掉透明边，返回画布与（相对裁切后画布的）热点。
 function decodeCursorFile(file) {
   const data = fs.readFileSync(file);
@@ -47,16 +68,16 @@ function decodeCursorFile(file) {
     }
   }
   if (right < 0) return null;
-  const full = new OffscreenCanvas(width, height);
+  const full = createCursorCanvas(width, height);
   full.getContext('2d').putImageData(image, 0, 0);
-  const canvas = new OffscreenCanvas(right - left + 1, bottom - top + 1);
+  const canvas = createCursorCanvas(right - left + 1, bottom - top + 1);
   canvas.getContext('2d').drawImage(full, -left, -top);
   return { canvas, width: canvas.width, height: canvas.height, hotspotX: best.hotspotX - left, hotspotY: best.hotspotY - top };
 }
 
 function vectorArrow() {
   const size = 128;
-  const canvas = new OffscreenCanvas(size * 0.62, size);
+  const canvas = createCursorCanvas(size * 0.62, size);
   const ctx = canvas.getContext('2d');
   const points = [[0.04, 0.03], [0.04, 0.80], [0.22, 0.63], [0.34, 0.93], [0.45, 0.88], [0.33, 0.59], [0.57, 0.59]];
   ctx.beginPath();
@@ -73,7 +94,7 @@ function vectorArrow() {
 
 function vectorBeam(height) {
   const width = Math.round(height * 0.44);
-  const canvas = new OffscreenCanvas(width, height);
+  const canvas = createCursorCanvas(width, height);
   const ctx = canvas.getContext('2d');
   const inset = height * 0.08;
   const draw = (lineWidth, color) => {
