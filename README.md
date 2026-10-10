@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="windows/assets/AppIconMaster.png" width="96" alt="Recly 图标：紫色底上的荧光绿录制圆环">
-</p>
-
-<p align="center">
   <img src="assets/readme/hero.svg" width="100%" alt="Recly Windows 录屏与剪辑工具：录制屏幕、自动运镜、编辑时间线并导出视频">
 </p>
 
@@ -18,7 +14,7 @@ Recly 是一款面向 Windows 的录屏与轻量剪辑工具。它把录制、�
 
 ![Recly 的悬浮录制条：选择屏幕、窗口或区域，控制麦克风与摄像头后开始录制](windows/docs/images/recorder.png)
 
-![Recly 编辑器：预览画面、调整运镜并在时间线上剪辑](windows/docs/images/editor.png)
+![Recly 编辑器：实际录制项目的画面预览、背景设置与时间线](assets/readme/editor-example.png)
 
 ## 能做什么
 
