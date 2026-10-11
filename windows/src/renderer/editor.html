@@ -29,7 +29,16 @@
     <nav class="rail card" id="rail"></nav>
     <section class="stage" id="stage">
       <div class="ratio card" id="ratio"></div>
-      <div class="canvas-wrap" id="canvas-wrap"><canvas id="preview"></canvas></div>
+      <button class="btn ghost quality-control" id="quality" title="切换预览质量">流畅预览</button>
+      <div class="canvas-wrap" id="canvas-wrap"><canvas id="preview" tabindex="0" aria-label="画面预览"></canvas></div>
+      <div class="preview-toolbar" id="preview-toolbar">
+        <button class="btn ghost icon-only preview-add-button" id="preview-add-button" type="button" title="添加到画面" aria-label="添加到画面" aria-haspopup="menu" aria-expanded="false">+</button>
+        <div class="preview-add-menu card" id="preview-add-menu" role="menu" hidden>
+          <button type="button" id="preview-add-mosaic" role="menuitem">柔化或突出</button>
+          <button type="button" id="preview-add-sticker" role="menuitem">导入贴图…</button>
+          <button type="button" id="preview-paste-image" role="menuitem">粘贴图片</button>
+        </div>
+      </div>
     </section>
     <aside class="inspector card"><h2 id="inspector-title"></h2><div id="inspector"></div></aside>
   </main>
@@ -37,9 +46,14 @@
   <footer class="timeline card">
     <div class="toolbar">
       <button class="btn ghost icon-only" id="split" title="在播放头处分割（S）"></button>
-      <button class="btn ghost icon-only" id="delete" title="删除选中的片段或缩放（Delete）"></button>
+      <button class="btn ghost icon-only" id="delete" title="删除选中的片段或效果（Delete）"></button>
       <button class="btn ghost" id="speed" title="选中片段的播放速度"></button>
       <button class="btn ghost" id="add-zoom" title="在播放头处添加缩放（Z）"></button>
+      <button class="btn ghost" id="ripple-start" title="Q：从片段起点波纹裁切到播放头">Q 起</button>
+      <button class="btn ghost" id="ripple-end" title="W：从播放头波纹裁切到片段末尾">W 尾</button>
+      <button class="btn ghost" id="restore-gap" title="恢复已剪掉的素材区间">恢复缺口</button>
+      <button class="btn ghost" id="display-mode" title="切换画面与波形">波形</button>
+      <button class="btn ghost icon-only" id="snap-toggle" title="切换时间线吸附"></button>
       <span class="spacer"></span>
       <button class="btn ghost icon-only" id="previous" title="上一个剪辑点"></button>
       <button class="btn icon-only play" id="play" title="播放 / 暂停（空格）"></button>
@@ -51,16 +65,24 @@
       <button class="btn ghost icon-only" id="zoom-in" title="放大时间线"></button>
     </div>
     <div class="tracks">
-      <div class="labels">
+      <div class="labels" id="track-labels">
         <div class="label ruler-label"></div>
         <div class="label" id="label-screen"></div>
         <div class="label" id="label-zoom"></div>
+        <div class="label" id="label-screen-motion"></div>
+        <div class="label" id="label-camera-motion"></div>
+        <div class="label" id="label-mosaic"></div>
+        <div class="label" id="label-sticker"></div>
       </div>
       <div class="scroller" id="scroller">
         <div class="lanes" id="lanes">
           <div class="ruler" id="ruler"></div>
           <div class="lane screen" id="lane-screen"></div>
           <div class="lane zoom" id="lane-zoom" title="双击空白处添加缩放"></div>
+          <div class="lane effect screen-motion" id="lane-screen-motion" title="双击空白处添加屏幕 3D 动效"></div>
+          <div class="lane effect camera-motion" id="lane-camera-motion" title="双击空白处添加摄像头动效"></div>
+          <div class="lane effect mosaic" id="lane-mosaic" title="双击空白处添加柔化/聚光"></div>
+          <div class="lane effect sticker" id="lane-sticker" title="双击空白处添加贴图"></div>
           <div class="playhead" id="playhead"><i></i></div>
         </div>
       </div>

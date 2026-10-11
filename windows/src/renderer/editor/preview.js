@@ -6,12 +6,14 @@ const path = require('node:path');
 const { ipcRenderer } = require('electron');
 const { fileUrl } = require('../common');
 const { canvasDimensions, clamp } = require('../../core/model');
+const { resolveAudio } = require('../../core/audio');
 const { evaluateScene } = require('../../core/scene');
 const timeline = require('../../core/timeline');
 const { Compositor } = require('./render');
 
 const DRIFT_TOLERANCE = 0.14;
 const MAX_PREVIEW_PIXELS = 2560;
+const MAX_FULL_PREVIEW_PIXELS = 7680;
 // 给高分辨率视频解码留出余量；导出仍按项目帧率逐帧渲染。
 const PREVIEW_FRAME_INTERVAL = 50;
 
@@ -33,7 +35,13 @@ class Preview {
     this.onStatus = () => {};
     this.status = '';
     this.preparingProxy = Boolean(media.screen && (media.screen.width > 1280 || media.screen.frameRate > 20) && ipcRenderer?.invoke);
-    this.pendingPlay = false;
+    this.quality = store.project.previewQuality === 'full' ? 'full' : 'balanced';
+    this.readyProxyFile = null;
+    this.proxyFile = null;
+    this.assetRequest = 0;
+    this.assetsPending = true;
+    this.assetError = null;
+    this.resumeAfterVisibility = false;
     if (this.preparingProxy) this.status = '正在准备流畅预览…';
 
     const make = (tag, track, muted) => {
@@ -47,23 +55,45 @@ class Preview {
       return { node, offset: track.offset || 0, duration: track.duration };
     };
     this.screen = make('video', media.screen, true);
+    this.originalScreenUrl = this.screen?.node.src || null;
+    this.activeScreenUrl = this.originalScreenUrl;
     this.camera = make('video', media.camera, true);
     this.microphone = make('audio', media.microphone, false);
     this.system = make('audio', media.systemAudio, false);
+    this.backgroundVideo = null;
+    this.setupBackgroundVideo();
 
     new ResizeObserver(() => this.layout()).observe(wrap);
     store.subscribe((reason) => {
       if (reason === 'project') {
         this.time = clamp(this.time, 0, this.duration);
-        this.compositor.prepare(store.project).then(() => this.invalidate());
+        const quality = store.project.previewQuality === 'full' ? 'full' : 'balanced';
+        if (quality !== this.quality) {
+          this.quality = quality;
+          this.switchScreenSource(quality === 'full'
+            ? this.originalScreenUrl
+            : (this.proxyFile ? fileUrl(this.proxyFile) : this.originalScreenUrl));
+        }
+        this.setupBackgroundVideo();
+        this.prepareAssets(store.project);
         this.layout();
         this.syncMedia(true);
       }
       this.invalidate();
     });
-    this.compositor.prepare(store.project).then(() => this.invalidate());
+    this.prepareAssets(store.project);
     this.layout();
     this.syncMedia(true);
+    this.visibilityChange = () => {
+      if (document.hidden) {
+        this.resumeAfterVisibility = this.playing;
+        if (this.playing) this.pause();
+      } else if (this.resumeAfterVisibility) {
+        this.resumeAfterVisibility = false;
+        this.play();
+      }
+    };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.visibilityChange);
     requestAnimationFrame((now) => this.frame(now));
     if (this.preparingProxy) this.prepareProxy();
   }
@@ -72,23 +102,105 @@ class Preview {
     try {
       const file = await ipcRenderer.invoke('project:preview', this.store.directory);
       if (file) {
-        this.screen.node.src = fileUrl(file);
-        this.screen.node.load();
-        this.syncMedia(true);
-        this.invalidate();
+        this.proxyFile = file;
+        this.readyProxyFile = file;
+        if (this.quality === 'balanced') this.applyReadyProxy();
       }
-      this.status = '';
+      this.status = this.assetError?.message || '';
     } catch (error) {
       console.warn('[Recly] 流畅预览准备失败', error);
-      this.status = '预览优化失败，播放可能卡顿';
+      this.status = this.assetError?.message || '预览优化失败，播放可能卡顿';
     } finally {
       this.preparingProxy = false;
       this.onStatus(this.status);
-      if (this.pendingPlay) {
-        this.pendingPlay = false;
-        this.play();
-      }
     }
+  }
+
+  prepareAssets(project) {
+    const request = ++this.assetRequest;
+    const previousError = this.assetError;
+    this.assetsPending = true;
+    this.assetError = null;
+    this.compositor.prepare(project).then(() => {
+      if (request !== this.assetRequest) return;
+      this.assetsPending = false;
+      if (previousError && this.status === previousError.message) {
+        this.status = this.preparingProxy ? '正在准备流畅预览…' : '';
+        this.onStatus(this.status);
+      }
+      this.invalidate();
+    }).catch((error) => {
+      if (request !== this.assetRequest) return;
+      this.assetsPending = false;
+      this.assetError = error;
+      this.status = error.message;
+      this.onStatus(this.status);
+    });
+  }
+
+  setupBackgroundVideo() {
+    const background = this.store.project.canvas.background;
+    const file = background?.kind === 'video' && background.file
+      ? (path.isAbsolute(background.file) ? background.file : path.join(this.store.directory, background.file))
+      : null;
+    if (this.backgroundVideo?.file === file) {
+      if (this.backgroundVideo) {
+        this.backgroundVideo.duration = background.duration;
+        this.backgroundVideo.isLooping = background.isLooping !== false;
+      }
+      return;
+    }
+    if (this.backgroundVideo) this.backgroundVideo.node.pause();
+    this.backgroundVideo = null;
+    if (!file) return;
+    const node = document.createElement('video');
+    node.src = fileUrl(file);
+    node.preload = 'auto';
+    node.muted = true;
+    node.playsInline = true;
+    node.addEventListener('seeked', () => this.invalidate());
+    node.addEventListener('loadeddata', () => this.invalidate());
+    this.backgroundVideo = { node, file, duration: background.duration, isLooping: background.isLooping !== false };
+  }
+
+  switchScreenSource(url) {
+    if (!this.screen || !url || this.activeScreenUrl === url) return false;
+    const resume = this.playing;
+    this.playing = false;
+    this.syncMedia(true);
+    this.screen.node.src = url;
+    this.activeScreenUrl = url;
+    this.screen.node.load();
+    this.syncMedia(true);
+    this.invalidate();
+    if (resume) {
+      this.playing = true;
+      this.lastTick = performance.now();
+      this.syncMedia(true);
+    }
+    return true;
+  }
+
+  applyReadyProxy() {
+    const file = this.proxyFile || this.readyProxyFile;
+    if (!file || this.quality !== 'balanced') return false;
+    this.proxyFile = file;
+    this.readyProxyFile = file;
+    return this.switchScreenSource(fileUrl(file));
+  }
+
+  setQuality(quality) {
+    if (quality !== 'balanced' && quality !== 'full') throw new TypeError('预览质量只能是 balanced 或 full');
+    if (this.quality === quality) return false;
+    this.quality = quality;
+    const target = quality === 'full'
+      ? this.originalScreenUrl
+      : (this.proxyFile ? fileUrl(this.proxyFile) : this.originalScreenUrl);
+    this.switchScreenSource(target);
+    this.layout();
+    this.invalidate();
+    this.onState();
+    return true;
   }
 
   get segments() { return this.store.project.timeline.segments; }
@@ -108,7 +220,10 @@ class Preview {
     const scale = Math.min(bounds.width / output.width, bounds.height / output.height);
     const cssWidth = Math.floor(output.width * scale);
     const cssHeight = Math.floor(output.height * scale);
-    const pixelScale = Math.min(devicePixelRatio, MAX_PREVIEW_PIXELS / Math.max(cssWidth, cssHeight));
+    const maxPixels = this.quality === 'full'
+      ? Math.min(MAX_FULL_PREVIEW_PIXELS, Math.max(media.screen.width, media.screen.height))
+      : MAX_PREVIEW_PIXELS;
+    const pixelScale = Math.min(devicePixelRatio, maxPixels / Math.max(cssWidth, cssHeight));
     this.canvas.style.width = `${cssWidth}px`;
     this.canvas.style.height = `${cssHeight}px`;
     const width = Math.max(Math.round(cssWidth * pixelScale), 2);
@@ -122,11 +237,6 @@ class Preview {
 
   play() {
     if (this.playing) return;
-    if (this.preparingProxy) {
-      this.pendingPlay = true;
-      this.onState();
-      return;
-    }
     if (this.time >= this.duration - 0.02) this.time = 0;
     this.playing = true;
     this.lastTick = performance.now();
@@ -135,17 +245,13 @@ class Preview {
   }
 
   pause() {
-    if (this.pendingPlay) {
-      this.pendingPlay = false;
-      this.onState();
-    }
     if (!this.playing) return;
     this.playing = false;
-    this.syncMedia(true);
+    if (!this.applyReadyProxy()) this.syncMedia(true);
     this.onState();
   }
 
-  toggle() { if (this.playing || this.pendingPlay) this.pause(); else this.play(); }
+  toggle() { if (this.playing) this.pause(); else this.play(); }
 
   seek(time) {
     this.time = clamp(time, 0, this.duration);
@@ -159,10 +265,35 @@ class Preview {
     return Boolean(this.screen?.inRange && (this.screen.node.seeking || this.screen.node.readyState < 2));
   }
 
+  syncBackgroundMedia(force) {
+    const track = this.backgroundVideo;
+    if (!track) return;
+    const { node } = track;
+    const mediaDuration = Number.isFinite(node.duration) && node.duration > 0 ? node.duration : track.duration;
+    let wanted = Math.max(this.time, 0);
+    if (Number.isFinite(mediaDuration) && mediaDuration > 0) {
+      wanted = track.isLooping
+        ? wanted % mediaDuration
+        : Math.min(wanted, Math.max(mediaDuration - 0.03, 0));
+    }
+    if (!this.playing || this.screenWaiting()) {
+      if (!node.paused) node.pause();
+      if (!node.seeking && Math.abs(node.currentTime - wanted) > 0.005) node.currentTime = wanted;
+      return;
+    }
+    if (node.playbackRate !== 1) node.playbackRate = 1;
+    const drift = Math.abs(node.currentTime - wanted);
+    if (!node.seeking && (force || drift > DRIFT_TOLERANCE)) node.currentTime = wanted;
+    if (!node.seeking && node.paused) node.play().catch(() => {});
+  }
+
   syncMedia(force) {
     const hit = timeline.locate(this.segments, this.time);
-    if (!hit) return;
-    const { audio } = this.store.project;
+    if (!hit) {
+      this.syncBackgroundMedia(force);
+      return;
+    }
+    const audio = resolveAudio(this.store.project.audio, hit.segment.audio);
     const volumes = {
       microphone: audio.isMicrophoneMuted ? 0 : audio.microphoneVolume,
       system: audio.isSystemMuted ? 0 : audio.systemVolume,
@@ -192,22 +323,27 @@ class Preview {
         if (node.playbackRate !== hit.segment.speed) node.playbackRate = hit.segment.speed;
         const drift = Math.abs(node.currentTime - wanted);
         const shouldSeek = (force && drift > 0.005) || drift > DRIFT_TOLERANCE * Math.max(hit.segment.speed, 1);
-        if (!node.seeking && (node.paused || shouldSeek)) {
-          if (shouldSeek) node.currentTime = wanted;
-          if (node.paused) node.play().catch(() => {});
-        }
+        if (!node.seeking && shouldSeek) node.currentTime = wanted;
+        // Chromium 的 seek 可能等待播放解码继续；暂停主视频会让剪辑后的
+        // 定位卡在 HAVE_METADATA。主视频继续解码，音轨仍在上方等待画面。
+        if (node.paused && (name === 'screen' || !node.seeking)) node.play().catch(() => {});
       } else {
         if (!node.paused) node.pause();
         if (Math.abs(node.currentTime - wanted) > 0.005) node.currentTime = wanted;
       }
     }
+    this.syncBackgroundMedia(force);
   }
 
   frame(now) {
+    if (typeof document !== 'undefined' && document.hidden) {
+      if (this.playing) this.pause();
+      requestAnimationFrame((next) => this.frame(next));
+      return;
+    }
     if (this.playing) {
       if (this.screenWaiting()) {
         this.lastTick = now;
-        if (!this.screen.node.paused) this.screen.node.pause();
         this.syncMedia(false);
         requestAnimationFrame((next) => this.frame(next));
         return;
@@ -242,6 +378,7 @@ class Preview {
   }
 
   draw() {
+    if (this.assetsPending || this.assetError) return;
     if (this.screen && this.screen.node.readyState < 2) return;
     const { project, zoomClips, pointerTrack } = this.store;
     const { media } = project;
@@ -249,6 +386,7 @@ class Preview {
     const cameraVisible = this.camera && this.camera.inRange && !project.camera.isHidden;
     const scene = evaluateScene(project, {
       time: this.sourceTime,
+      outputTime: this.time,
       width: this.canvas.width,
       height: this.canvas.height,
       sourceAspect: media.screen.width / media.screen.height,
@@ -257,7 +395,11 @@ class Preview {
       pointerTrack,
     });
     this.scene = scene;
-    this.compositor.draw(this.ctx, project, scene, { screen: ready(this.screen), camera: cameraVisible ? ready(this.camera) : null });
+    this.compositor.draw(this.ctx, project, scene, {
+      screen: ready(this.screen),
+      camera: cameraVisible ? ready(this.camera) : null,
+      background: ready(this.backgroundVideo),
+    });
   }
 }
 

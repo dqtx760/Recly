@@ -10,6 +10,8 @@ const os = require('node:os');
 const {
   getProjectsRoot,
   setProjectsRoot,
+  getHideDesktopIconsDuringRecording,
+  setHideDesktopIconsDuringRecording,
   registerConfigIpc,
   getConfigPath,
   setConfigPath,
@@ -109,6 +111,21 @@ async function runTests() {
     assert.throws(() => setProjectsRoot({}), /Invalid projects directory path/);
   });
 
+  await test('桌面图标录制选项默认关闭，并且保留其他配置项', () => {
+    const testConfigFile = path.join(tmpDir, 'desktop-icons-config.json');
+    setConfigPath(testConfigFile);
+    fs.writeFileSync(testConfigFile, JSON.stringify({ projectsRoot: 'D:/Projects', keep: 17 }), 'utf8');
+    assert.equal(getHideDesktopIconsDuringRecording(), false);
+    assert.equal(setHideDesktopIconsDuringRecording(true), true);
+    assert.equal(getHideDesktopIconsDuringRecording(), true);
+    const content = JSON.parse(fs.readFileSync(testConfigFile, 'utf8'));
+    assert.equal(content.keep, 17);
+    assert.equal(content.projectsRoot, 'D:/Projects');
+    assert.equal(setHideDesktopIconsDuringRecording(false), false);
+    assert.equal(getHideDesktopIconsDuringRecording(), false);
+    assert.throws(() => setHideDesktopIconsDuringRecording('true'), /Invalid desktop icon visibility setting/);
+  });
+
   await test('配置文件损坏时优雅回退而不崩溃', () => {
     const testConfigFile = path.join(tmpDir, 'corrupt-config.json');
     setConfigPath(testConfigFile);
@@ -133,6 +150,8 @@ async function runTests() {
     assert.ok(handlers.has('config:get-projects-root'));
     assert.ok(handlers.has('config:set-projects-root'));
     assert.ok(handlers.has('config:choose-projects-root'));
+    assert.ok(handlers.has('config:get-hide-desktop-icons'));
+    assert.ok(handlers.has('config:set-hide-desktop-icons'));
 
     // 测试 get
     const initial = await handlers.get('config:get-projects-root')();
@@ -143,6 +162,9 @@ async function runTests() {
     const updated = await handlers.get('config:set-projects-root')(null, updateDir);
     assert.equal(updated, path.resolve(updateDir));
     assert.equal(getProjectsRoot(), path.resolve(updateDir));
+    assert.equal(await handlers.get('config:get-hide-desktop-icons')(), false);
+    assert.equal(await handlers.get('config:set-hide-desktop-icons')(null, true), true);
+    assert.equal(getHideDesktopIconsDuringRecording(), true);
   });
 
   await test('config:choose-projects-root: 用户选中目录时保存并返回新路径', async () => {

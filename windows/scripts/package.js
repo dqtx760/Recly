@@ -20,7 +20,7 @@ process.env.ELECTRON_MIRROR = process.env.ELECTRON_MIRROR || 'https://npmmirror.
 async function main() {
   fs.mkdirSync(build, { recursive: true });
   // Windows 图标由 Windows 专用图标母版转出。
-  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', appIconPng, '-vf', 'scale=256:256', icon], { stdio: 'inherit' });
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', appIconPng, '-vf', 'scale=256:256', '-pix_fmt', 'bgra', icon], { stdio: 'inherit' });
 
   const { packager } = await import('@electron/packager');
   const [output] = await packager({
@@ -31,7 +31,7 @@ async function main() {
     out: path.join(root, 'dist'),
     overwrite: true,
     icon,
-    extraResource: [fonts, appIconPng, license],
+    extraResource: [fonts, appIconPng, icon, license],
     ignore: [/^\/(dist|build|test|scripts)($|\/)/, /\.bat$/],
     win32metadata: { CompanyName: 'Recly', FileDescription: 'Recly', ProductName: 'Recly' },
   });

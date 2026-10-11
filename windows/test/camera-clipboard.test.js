@@ -173,6 +173,7 @@ test('ClipClipboard: copy and paste clip creates duplicate at playheadTime', () 
   assert.equal(clipboard.hasClip(), true);
 
   const mockProject = {
+    media: { screen: { duration: 10 } },
     zoomAnimations: [originalClip],
     timeline: { cameraMotionClips: [] },
   };
@@ -282,6 +283,43 @@ test('ClipClipboard: copy and paste attributes transfers visual parameters while
   near(targetCameraClip.target.size, 0.6, 1e-4);
   near(targetCameraClip.target.roundness, 0.9, 1e-4);
   near(targetCameraClip.target.opacity, 0.7, 1e-4);
+});
+
+test('ClipClipboard: mosaic and sticker attributes copy as their own types and preserve timing', () => {
+  const clipboard = new ClipClipboard();
+  const sourceMosaic = {
+    id: 'mosaic-source', timing: { startTime: 8, duration: 2 }, sourceRect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+    style: 'spotlight', intensity: 0.82, spotlightDimming: 0.55, transitionStyle: 'smooth',
+  };
+  const targetMosaic = {
+    id: 'mosaic-target', timing: { startTime: 1, duration: 4 }, sourceRect: { x: 0, y: 0, width: 1, height: 1 }, style: 'blur', intensity: 0.2,
+  };
+  clipboard.copy(sourceMosaic, 'mosaic');
+  clipboard.pasteAttributes(targetMosaic, clipboard.clipboardData, 'mosaic');
+  assert.equal(targetMosaic.id, 'mosaic-target');
+  assert.deepEqual(targetMosaic.timing, { startTime: 1, duration: 4 });
+  assert.deepEqual(targetMosaic.sourceRect, sourceMosaic.sourceRect);
+  assert.equal(targetMosaic.style, 'spotlight');
+  assert.equal(targetMosaic.intensity, 0.82);
+  assert.notEqual(targetMosaic.sourceRect, sourceMosaic.sourceRect, 'nested visual values are copied');
+
+  const sourceSticker = {
+    id: 'sticker-source', timing: { startTime: 3, duration: 2 }, relativePath: 'media/one.png',
+    position: { x: 0.25, y: 0.75 }, width: 0.45, height: 0.3, rotationDegrees: 24, opacity: 0.65, hidesScreen: true,
+  };
+  const targetSticker = { id: 'sticker-target', timing: { startTime: 5, duration: 7 }, relativePath: 'media/two.png', position: { x: 0.5, y: 0.5 } };
+  clipboard.copy(sourceSticker, 'sticker');
+  clipboard.pasteAttributes(targetSticker, clipboard.clipboardData, 'sticker');
+  assert.equal(targetSticker.id, 'sticker-target');
+  assert.deepEqual(targetSticker.timing, { startTime: 5, duration: 7 });
+  assert.equal(targetSticker.relativePath, 'media/one.png');
+  assert.deepEqual(targetSticker.position, { x: 0.25, y: 0.75 });
+  assert.equal(targetSticker.opacity, 0.65);
+  assert.equal(targetSticker.hidesScreen, true);
+
+  const beforeMismatch = structuredClone(targetSticker);
+  clipboard.pasteAttributes(targetSticker, clipboard.clipboardData, 'mosaic');
+  assert.deepEqual(targetSticker, beforeMismatch, 'different effect kinds are left untouched');
 });
 
 console.log(`\nAll ${passed} tests passed successfully.`);

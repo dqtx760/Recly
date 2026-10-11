@@ -308,6 +308,55 @@ button:focus-visible {
   gap: 7px;
 }
 
+.desktop-icons-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 0 11px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--rec-card-border);
+  box-sizing: border-box;
+}
+
+.desktop-icons-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.desktop-icons-meta b {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.desktop-icons-meta small {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.desktop-icons-setting .toggle-switch {
+  width: 42px;
+  height: 24px;
+}
+
+.desktop-icons-setting .toggle-switch::after {
+  width: 18px;
+  height: 18px;
+}
+
+.desktop-icons-setting .toggle-switch.on::after {
+  transform: translateX(18px);
+}
+
+.desktop-icons-setting .toggle-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .device-row {
   display: flex;
   align-items: center;
@@ -693,6 +742,7 @@ button:focus-visible {
   .selection-pill { min-height: 36px; gap: 6px; padding: 4px 10px; }
   .selection-pill .target-icon { width: 20px; height: 20px; }
   .section-devices { gap: 5px; }
+  .desktop-icons-setting { min-height: 34px; }
   .device-row { height: 48px; padding: 4px 10px; }
   .device-icon { width: 34px; height: 34px; border-radius: 11px; }
   .device-icon svg.icon { width: 20px; height: 20px; }

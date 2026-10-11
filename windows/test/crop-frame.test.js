@@ -9,6 +9,7 @@ const {
   decorationInsets,
   screenDecoration,
 } = require('../src/core/crop-frame');
+const { defaultCanvas, normalizeProject } = require('../src/core/model');
 
 const near = (actual, expected, tolerance = 1e-5, label = '') => {
   assert.ok(
@@ -197,33 +198,70 @@ test('FRAME_DEFAULTS: matching design specification', () => {
   assert.equal(FRAME_DEFAULTS.windowLight.outerRadius, 18);
   assert.equal(FRAME_DEFAULTS.windowLight.contentRadius, 0);
   assert.equal(FRAME_DEFAULTS.windowLight.shadowStrength, 0.22);
-  assert.equal(FRAME_DEFAULTS.windowLight.toolbarHeight, 38);
+  assert.equal(FRAME_DEFAULTS.windowLight.toolbarHeight, 46);
 
   assert.equal(FRAME_DEFAULTS.windowDark.toolbarScale, 0.90);
   assert.equal(FRAME_DEFAULTS.windowDark.outerRadius, 18);
   assert.equal(FRAME_DEFAULTS.windowDark.contentRadius, 0);
-  assert.equal(FRAME_DEFAULTS.windowDark.shadowStrength, 0.24);
-  assert.equal(FRAME_DEFAULTS.windowDark.toolbarHeight, 38);
+  assert.equal(FRAME_DEFAULTS.windowDark.shadowStrength, 0.30);
+  assert.equal(FRAME_DEFAULTS.windowDark.toolbarHeight, 46);
 
-  assert.equal(FRAME_DEFAULTS.browserLight.toolbarScale, 0.88);
-  assert.equal(FRAME_DEFAULTS.browserLight.outerRadius, 16);
+  assert.equal(FRAME_DEFAULTS.browserLight.toolbarScale, 1.08);
+  assert.equal(FRAME_DEFAULTS.browserLight.outerRadius, 22);
   assert.equal(FRAME_DEFAULTS.browserLight.contentRadius, 0);
-  assert.equal(FRAME_DEFAULTS.browserLight.shadowStrength, 0.20);
+  assert.equal(FRAME_DEFAULTS.browserLight.shadowStrength, 0.22);
   assert.equal(FRAME_DEFAULTS.browserLight.toolbarHeight, 46);
 
-  assert.equal(FRAME_DEFAULTS.browserDark.toolbarScale, 0.88);
-  assert.equal(FRAME_DEFAULTS.browserDark.outerRadius, 16);
+  assert.equal(FRAME_DEFAULTS.browserDark.toolbarScale, 1.08);
+  assert.equal(FRAME_DEFAULTS.browserDark.outerRadius, 22);
   assert.equal(FRAME_DEFAULTS.browserDark.contentRadius, 0);
-  assert.equal(FRAME_DEFAULTS.browserDark.shadowStrength, 0.22);
+  assert.equal(FRAME_DEFAULTS.browserDark.shadowStrength, 0.30);
   assert.equal(FRAME_DEFAULTS.browserDark.toolbarHeight, 46);
 
+  assert.equal(FRAME_DEFAULTS.devicePhone.frameScale, 0.90);
   assert.equal(FRAME_DEFAULTS.devicePhone.toolbarScale, 1.0);
-  assert.equal(FRAME_DEFAULTS.devicePhone.outerRadius, 44);
-  assert.equal(FRAME_DEFAULTS.devicePhone.contentRadius, 36);
-  assert.equal(FRAME_DEFAULTS.devicePhone.shadowStrength, 0.32);
+  assert.equal(FRAME_DEFAULTS.devicePhone.outerRadius, 64);
+  assert.equal(FRAME_DEFAULTS.devicePhone.contentRadius, 40);
+  assert.equal(FRAME_DEFAULTS.devicePhone.shadowStrength, 0.24);
   assert.equal(FRAME_DEFAULTS.devicePhone.bezelWidth, 14);
 
   assert.equal(ScreenFrameDefaults, FRAME_DEFAULTS);
+});
+
+test('defaultCanvas and legacy project normalization preserve inherited frame geometry', () => {
+  const defaults = defaultCanvas();
+  assert.equal(defaults.screenFrameScale, 1);
+  assert.equal(defaults.screenFrameToolbarScale, 1);
+  assert.equal(defaults.screenFrameOuterCornerRadius, null);
+  assert.equal(defaults.screenFrameContentCornerRadius, null);
+
+  const legacy = normalizeProject({
+    media: { screen: { duration: 4 } },
+    canvas: { screenFrame: 'browserLight' },
+    timeline: { segments: [{ id: 'segment', sourceStart: 0, sourceEnd: 4, speed: 1 }] },
+  });
+  assert.equal(legacy.canvas.screenFrameScale, 1);
+  assert.equal(legacy.canvas.screenFrameToolbarScale, 1);
+  assert.equal(legacy.canvas.screenFrameOuterCornerRadius, null);
+  assert.equal(legacy.canvas.screenFrameContentCornerRadius, null);
+
+  const savedOverrides = normalizeProject({
+    media: { screen: { duration: 4 } },
+    canvas: {
+      screenFrame: 'browserLight',
+      screenFrameScale: 0.92,
+      screenFrameToolbarScale: 1.12,
+      screenFrameOuterCornerRadius: 0,
+      screenFrameContentCornerRadius: null,
+      screenFrameBrowserAddress: 'https://example.com',
+    },
+    timeline: { segments: [{ id: 'segment', sourceStart: 0, sourceEnd: 4, speed: 1 }] },
+  });
+  assert.equal(savedOverrides.canvas.screenFrameScale, 0.92);
+  assert.equal(savedOverrides.canvas.screenFrameToolbarScale, 1.12);
+  assert.equal(savedOverrides.canvas.screenFrameOuterCornerRadius, 0);
+  assert.equal(savedOverrides.canvas.screenFrameContentCornerRadius, null);
+  assert.equal(savedOverrides.canvas.screenFrameBrowserAddress, 'https://example.com');
 });
 
 // ==========================================
@@ -239,30 +277,30 @@ test('decorationInsets: none style returns zero insets', () => {
 });
 
 test('decorationInsets: windowLight and windowDark toolbar insets', () => {
-  // Default toolbarScale = 0.90, base toolbarHeight = 38 => 38 * 0.90 = 34.2
+  // Default toolbarScale = 0.90, base toolbarHeight = 46 => 46 * 0.90 = 41.4
   const insetsLight = decorationInsets({ style: 'windowLight' });
-  near(insetsLight.top, 34.2);
+  near(insetsLight.top, 41.4);
   near(insetsLight.right, 0);
   near(insetsLight.bottom, 0);
   near(insetsLight.left, 0);
 
-  // Overriding toolbarScale to 1.0 => top = 38
+  // Overriding toolbarScale to 1.0 => top = 46
   const insetsFull = decorationInsets({ style: 'windowLight', toolbarScale: 1.0 });
-  near(insetsFull.top, 38);
+  near(insetsFull.top, 46);
 
   // windowDark matches windowLight metrics
   const insetsDark = decorationInsets({ style: 'windowDark' });
-  near(insetsDark.top, 34.2);
+  near(insetsDark.top, 41.4);
 
-  // With styleScale = 1.5 => top = 38 * 1.5 * 0.9 = 51.3
+  // With styleScale = 1.5 => top = 46 * 1.5 * 0.9 = 62.1
   const insetsScaled = decorationInsets({ style: 'windowLight', styleScale: 1.5 });
-  near(insetsScaled.top, 51.3);
+  near(insetsScaled.top, 62.1);
 });
 
 test('decorationInsets: browserLight and browserDark toolbar insets', () => {
-  // Default toolbarScale = 0.88, base toolbarHeight = 46 => 46 * 0.88 = 40.48
+  // Default toolbarScale = 1.08, base toolbarHeight = 46 => 46 * 1.08 = 49.68
   const insetsLight = decorationInsets({ style: 'browserLight' });
-  near(insetsLight.top, 40.48);
+  near(insetsLight.top, 49.68);
   near(insetsLight.right, 0);
   near(insetsLight.bottom, 0);
   near(insetsLight.left, 0);
@@ -273,11 +311,11 @@ test('decorationInsets: browserLight and browserDark toolbar insets', () => {
 
   // browserDark matches browserLight metrics
   const insetsDark = decorationInsets({ style: 'browserDark' });
-  near(insetsDark.top, 40.48);
+  near(insetsDark.top, 49.68);
 });
 
 test('decorationInsets: devicePhone bezel insets', () => {
-  // Default scale returns bezelWidth = 14 on all 4 edges
+  // Without fitted dimensions, decorationInsets keeps its explicit scale-1 default.
   const insetsPhone = decorationInsets({ style: 'devicePhone' });
   near(insetsPhone.top, 14);
   near(insetsPhone.right, 14);
@@ -298,7 +336,7 @@ test('decorationInsets: devicePhone bezel insets', () => {
     fittedHeight: 1000,
     frameScale: 1.0,
   });
-  // 1000 * 0.026 = 26
+  // 1000 * 0.026 * 1.0 = 26
   near(insetsDynamic.top, 26);
   near(insetsDynamic.right, 26);
   near(insetsDynamic.bottom, 26);
@@ -340,7 +378,7 @@ test('screenDecoration: windowLight creates toolbar and 3 control buttons', () =
   assert.equal(dec.title, 'My Project - Editor');
 
   // Outer rect expanded upwards by top inset
-  const expectedTopInset = 34.2; // 38 * 0.90
+  const expectedTopInset = 41.4; // 46 * 0.90
   near(dec.outerRect.x, 50);
   near(dec.outerRect.y, 50 - expectedTopInset);
   near(dec.outerRect.width, 1000);
@@ -397,7 +435,7 @@ test('screenDecoration: browserLight and browserDark with address bar layout', (
   assert.ok(dec.addressFieldRect.height > 10);
   assert.ok(dec.addressFieldRect.x >= dec.controls.endX);
 
-  near(dec.outerCornerRadius, 16);
+  near(dec.outerCornerRadius, 22);
   near(dec.contentCornerRadius, 0);
 
   // browserDark test
@@ -419,16 +457,16 @@ test('screenDecoration: devicePhone expands outer rect on all 4 sides', () => {
   assert.equal(dec.kind, 'devicePhone');
   assert.equal(dec.isDark, true);
 
-  // Short edge is 400 => bezel = 400 * 0.026 = 10.4px
-  const expectedBezel = 400 * 0.026;
+  // Short edge is 400 => bezel = 400 * 0.026 * 0.90 = 9.36px
+  const expectedBezel = 400 * 0.026 * 0.90;
   near(dec.outerRect.x, 100 - expectedBezel);
   near(dec.outerRect.y, 100 - expectedBezel);
   near(dec.outerRect.width, 400 + expectedBezel * 2);
   near(dec.outerRect.height, 800 + expectedBezel * 2);
 
-  near(dec.outerCornerRadius, 44);
-  near(dec.contentCornerRadius, 36);
-  near(dec.shadowStrength, 0.32);
+  near(dec.outerCornerRadius, 57.6); // authored radius 64 * frameScale 0.90
+  near(dec.contentCornerRadius, 36); // authored radius 40 * frameScale 0.90
+  near(dec.shadowStrength, 0.24);
 });
 
 test('screenDecoration: text truncation and safe limits', () => {

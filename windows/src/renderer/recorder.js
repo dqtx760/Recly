@@ -26,6 +26,8 @@ const state = {
   mic: { on: saved.mic ?? true, deviceId: saved.micId || null, permissionError: null },
   cam: { on: false, deviceId: saved.camId || null },
   sys: { on: saved.sys ?? true },
+  hideDesktopIcons: false,
+  savingDesktopIconSetting: false,
   session: null,
   result: null,
 };
@@ -125,6 +127,16 @@ function render() {
   if (startBtn) {
     startBtn.disabled = !state.environment.ok;
     startBtn.title = state.environment.ok ? '开始录制 (Ctrl+Alt+R)' : (state.environment.reason || '暂时无法录制');
+  }
+
+  const desktopIconsToggle = $('desktop-icons');
+  if (desktopIconsToggle) {
+    desktopIconsToggle.classList.toggle('on', state.hideDesktopIcons);
+    desktopIconsToggle.setAttribute('aria-checked', String(state.hideDesktopIcons));
+    desktopIconsToggle.disabled = state.selection.kind === 'window' || state.savingDesktopIconSetting;
+    desktopIconsToggle.title = state.selection.kind === 'window'
+      ? '窗口录制不包含桌面图标'
+      : '录制桌面或区域时隐藏桌面图标';
   }
 }
 
@@ -294,6 +306,23 @@ bindDeviceToggle('mic');
 bindDeviceToggle('cam');
 bindDeviceToggle('sys');
 
+$('desktop-icons')?.addEventListener('click', async () => {
+  if (state.selection.kind === 'window' || state.savingDesktopIconSetting) return;
+  const previous = state.hideDesktopIcons;
+  state.hideDesktopIcons = !previous;
+  state.savingDesktopIconSetting = true;
+  render();
+  try {
+    state.hideDesktopIcons = await ipcRenderer.invoke('config:set-hide-desktop-icons', state.hideDesktopIcons) === true;
+  } catch (error) {
+    state.hideDesktopIcons = previous;
+    console.error('Failed to save desktop icon recording setting:', error);
+  } finally {
+    state.savingDesktopIconSetting = false;
+    render();
+  }
+});
+
 $('mic')?.addEventListener('contextmenu', (e) => { e.preventDefault(); deviceMenu('audioinput', state.mic); });
 $('mic-row')?.addEventListener('contextmenu', (e) => { e.preventDefault(); deviceMenu('audioinput', state.mic); });
 $('mic-name')?.addEventListener('click', (e) => {
@@ -430,8 +459,9 @@ async function start() {
   const { streams, problems } = await openStreams();
   const tracks = [];
   const fail = async (error) => {
-    await stopTracks(tracks);
+    try { await stopTracks(tracks); } catch {}
     Object.values(streams).forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
+    await ipcRenderer.invoke('recorder:cancel', 'preparing').catch(() => {});
     state.environment = { ...state.environment, ok: false, reason: String(error.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') };
     render();
     setTimeout(() => { state.environment.ok = true; render(); }, 6000);
@@ -490,9 +520,33 @@ async function stop(discard) {
   if ($('busyTitle')) $('busyTitle').textContent = discard ? '正在放弃这次录制…' : '正在整理素材…';
   show('busy');
 
-  const tracks = await stopTracks(session.tracks);
+  let tracks;
+  try {
+    tracks = await stopTracks(session.tracks);
+  } catch (error) {
+    for (const track of session.tracks) {
+      if (track.recorder && track.recorder.state !== 'inactive') {
+        try { track.recorder.stop(); } catch {}
+      }
+      track.stream.getTracks().forEach((item) => item.stop());
+    }
+    await ipcRenderer.invoke('recorder:cancel', 'recording').catch(() => {});
+    state.environment = { ...state.environment, ok: false, reason: String(error.message || error) };
+    show('idle');
+    render();
+    setTimeout(() => { state.environment.ok = true; render(); }, 6000);
+    return;
+  }
   if (discard) {
-    await ipcRenderer.invoke('recorder:cancel');
+    try {
+      await ipcRenderer.invoke('recorder:cancel', 'recording');
+    } catch (error) {
+      state.environment = { ...state.environment, ok: false, reason: String(error.message || error) };
+      show('idle');
+      render();
+      setTimeout(() => { state.environment.ok = true; render(); }, 6000);
+      return;
+    }
     show('idle');
     render();
     return;
@@ -501,7 +555,6 @@ async function stop(discard) {
   try {
     state.result = await ipcRenderer.invoke('recorder:stop', tracks);
     if (state.result && state.result.directory) {
-      await ipcRenderer.invoke('project:open', state.result.directory);
       state.result = null;
       show('idle');
       render();
@@ -622,6 +675,11 @@ ipcRenderer.on('app:environment', (event, environment) => {
     state.selection = { kind: 'display', displayId: primary ? primary.id : null };
   } catch (err) {
     console.error('Failed to load displays:', err);
+  }
+  try {
+    state.hideDesktopIcons = await ipcRenderer.invoke('config:get-hide-desktop-icons') === true;
+  } catch (err) {
+    console.error('Failed to load desktop icon recording setting:', err);
   }
   try {
     state.environment = await ipcRenderer.invoke('app:environment');

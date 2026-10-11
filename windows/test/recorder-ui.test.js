@@ -30,6 +30,7 @@ test('recorder.html 包含全部 Bandicam 控制台必需元素 ID', () => {
     'mic', 'mic-row', 'mic-status', 'mic-name', 'mic-name-label',
     'cam', 'cam-row', 'cam-status', 'cam-name',
     'sys', 'sys-row', 'sys-desc',
+    'desktop-icons',
     'save-dir-path', 'change-save-dir', 'open-save-dir',
     'start', 'stop', 'discard', 'timer', 'marker', 'memo2',
     'library', 'shortcuts-btn', 'memo',
@@ -43,6 +44,26 @@ test('recorder.html 包含全部 Bandicam 控制台必需元素 ID', () => {
   const controller = fs.readFileSync(path.join(__dirname, '../src/renderer/recorder.js'), 'utf8');
   assert.match(controller, /\$\('mic-name'\)\?\.addEventListener\('click'/, '点击麦克风选择控件必须打开设备列表');
   assert.match(controller, /audio:\s*\{\s*\.\.\.device\(state\.mic\.deviceId\)/, '录制麦克风必须使用已选择的设备 ID');
+});
+
+test('完成通知卡片独立显示缩略图、另存和进入编辑操作', () => {
+  const renderer = path.join(__dirname, '../src/renderer');
+  const html = fs.readFileSync(path.join(renderer, 'recording-complete.html'), 'utf8');
+  for (const id of ['thumbnail', 'project-name', 'save-path', 'edit', 'save-copy', 'close']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`), `完成卡片必须包含 ${id}`);
+  }
+  assert.match(html, /id=["']save-copy["'][^>]*>保存项目…/, '完成卡片必须提供保存项目操作');
+  assert.doesNotMatch(html, /id=["']reveal["']/, '完成卡片不再显示打开位置按钮');
+  const cardController = fs.readFileSync(path.join(renderer, 'recording-complete.js'), 'utf8');
+  assert.doesNotMatch(cardController, /\$\(['"]reveal['"]\)/, '完成卡片不应保留打开位置处理器');
+  const cardStyle = fs.readFileSync(path.join(renderer, 'recording-complete.css'), 'utf8');
+  assert.match(cardStyle, /height:\s*150px/);
+  assert.match(cardStyle, /aspect-ratio:\s*16\s*\/\s*9/);
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+  assert.match(main, /width:\s*353,\s*height:\s*336/, '完成卡片为 340×320，外围留有透明投影边距');
+  assert.match(main, /Math\.floor\(\(area\.height - margin \* 2 \+ gap\) \/ \(height \+ gap\)\)/, '堆叠数量按工作区高度计算');
+  assert.match(main, /showRecordingComplete\(completion\)/, '结束录制后必须显示独立完成卡片');
+  assert.match(main, /copyProjectToFolder\(source, dialogResult\.filePaths\[0\]\)/, '另存操作必须复制完整项目包');
 });
 
 test('主控台图标路径指向实际打包资源', () => {
@@ -234,4 +255,4 @@ asyncTest('recorder.js 控制台事件绑定与状态流转', async () => {
   assert.equal(shortcutsModal.hidden, true, '点击关闭按钮关闭弹窗');
 });
 
-console.log('全部 2 项 Recorder 控制台测试顺利通过！');
+console.log(`全部 ${passed} 项 Recorder 控制台测试顺利通过！`);

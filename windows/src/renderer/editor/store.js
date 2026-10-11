@@ -12,7 +12,7 @@ class Store {
     this.directory = directory;
     this.project = project;
     this.pointerTrack = loadPointerTrack(directory, project);
-    this.selection = null; // { type: 'segment' | 'zoom', id }
+    this.selection = null; // { type: 'segment' | 'zoom' | 'screen' | 'camera' | 'mosaic' | 'sticker', id }
     this.listeners = new Set();
     this.undoStack = [];
     this.redoStack = [];
@@ -63,10 +63,26 @@ class Store {
     this.project = JSON.parse(snapshot);
     this.project.media = media; // 素材引用不随撤销变化
     if (this.selection) {
-      const pool = this.selection.type === 'zoom' ? this.project.zoomAnimations : this.project.timeline.segments;
+      const pool = this.clipPool(this.selection.type);
       if (!pool.some((item) => item.id === this.selection.id)) this.selection = null;
     }
     this.afterChange();
+  }
+
+  clipPool(type) {
+    if (type === 'zoom') return this.project.zoomAnimations || [];
+    if (type === 'segment') return this.project.timeline.segments || [];
+    const pools = {
+      screen: this.project.timeline.screenMotionClips,
+      camera: this.project.timeline.cameraMotionClips,
+      mosaic: this.project.timeline.mosaicClips,
+      sticker: this.project.timeline.stickerClips,
+    };
+    return pools[type] || [];
+  }
+
+  getClip(type, id) {
+    return this.clipPool(type).find((item) => item.id === id) || null;
   }
 
   undo() {
@@ -95,6 +111,14 @@ class Store {
   get selectedZoom() {
     return this.selection && this.selection.type === 'zoom' ? this.project.zoomAnimations.find((clip) => clip.id === this.selection.id) || null : null;
   }
+
+  get selectedScreenMotion() { return this.selection && this.selection.type === 'screen' ? this.getClip('screen', this.selection.id) : null; }
+
+  get selectedCameraMotion() { return this.selection && this.selection.type === 'camera' ? this.getClip('camera', this.selection.id) : null; }
+
+  get selectedMosaic() { return this.selection && this.selection.type === 'mosaic' ? this.getClip('mosaic', this.selection.id) : null; }
+
+  get selectedSticker() { return this.selection && this.selection.type === 'sticker' ? this.getClip('sticker', this.selection.id) : null; }
 
   get selectedSegment() {
     return this.selection && this.selection.type === 'segment' ? this.project.timeline.segments.find((segment) => segment.id === this.selection.id) || null : null;

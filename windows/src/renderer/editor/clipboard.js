@@ -63,8 +63,14 @@ class ClipClipboard {
     const cloned = JSON.parse(JSON.stringify(sourceClip));
     cloned.id = newId;
 
-    const proposedTime = Math.max(playheadTime, 0);
-    const duration = getClipDuration(sourceClip, kind);
+    const mediaDuration = project.media?.screen?.duration;
+    if (!Number.isFinite(mediaDuration)) return null;
+    const proposedTime = Math.max(Number.isFinite(playheadTime) ? playheadTime : 0, 0);
+    const remainingDuration = mediaDuration - proposedTime;
+    if (remainingDuration < 0.05) return null;
+    const sourceDuration = getClipDuration(sourceClip, kind);
+    if (!Number.isFinite(sourceDuration) || sourceDuration <= 0) return null;
+    const duration = Math.min(sourceDuration, remainingDuration);
 
     if (kind === 'zoom') {
       cloned.startTime = proposedTime;
@@ -85,6 +91,7 @@ class ClipClipboard {
       }
       if (cloned.timing) {
         cloned.timing.startTime = proposedTime;
+        cloned.timing.duration = duration;
       } else {
         cloned.timing = { startTime: proposedTime, duration };
       }
@@ -100,6 +107,7 @@ class ClipClipboard {
       }
       if (cloned.timing) {
         cloned.timing.startTime = proposedTime;
+        cloned.timing.duration = duration;
       } else {
         cloned.timing = { startTime: proposedTime, duration };
       }
@@ -115,6 +123,9 @@ class ClipClipboard {
       }
       if (cloned.timing) {
         cloned.timing.startTime = proposedTime;
+        cloned.timing.duration = duration;
+      } else {
+        cloned.timing = { startTime: proposedTime, duration };
       }
       project.timeline.mosaicClips.push(cloned);
       return cloned;
@@ -126,6 +137,9 @@ class ClipClipboard {
       }
       if (cloned.timing) {
         cloned.timing.startTime = proposedTime;
+        cloned.timing.duration = duration;
+      } else {
+        cloned.timing = { startTime: proposedTime, duration };
       }
       project.timeline.stickerClips.push(cloned);
       return cloned;
@@ -147,10 +161,35 @@ class ClipClipboard {
    * @param {Object} sourcePayload 来源数据（可以传剪贴板数据或者片段对象）
    * @returns {Object} 目标片段
    */
-  pasteAttributes(targetClip, sourcePayload) {
+  pasteAttributes(targetClip, sourcePayload, targetKind = null) {
     if (!targetClip) return targetClip;
     const source = sourcePayload && sourcePayload.clip ? sourcePayload.clip : (sourcePayload || (this.clipboardData && this.clipboardData.clip));
     if (!source) return targetClip;
+    const sourceKind = sourcePayload && sourcePayload.clip ? sourcePayload.kind : (this.clipboardData && this.clipboardData.kind);
+    if (targetKind && sourceKind && targetKind !== sourceKind) return targetClip;
+
+    const copyKeys = (keys) => {
+      for (const key of keys) {
+        if (source[key] === undefined) continue;
+        targetClip[key] = source[key] && typeof source[key] === 'object'
+          ? JSON.parse(JSON.stringify(source[key]))
+          : source[key];
+      }
+    };
+
+    if (targetKind === 'mosaic') {
+      copyKeys(['sourceRect', 'cornerRadius', 'style', 'intensity', 'spotlightDimming', 'transitionStyle', 'transitionInDuration', 'transitionOutDuration']);
+      return targetClip;
+    }
+    if (targetKind === 'sticker') {
+      copyKeys([
+        'relativePath', 'position', 'width', 'height', 'rotationDegrees', 'opacity', 'cornerRadius',
+        'borderWidth', 'borderColor', 'shadowOpacity', 'shadowRadius', 'shadowOffsetX', 'shadowOffsetY',
+        'animation', 'animationCurve', 'exitAnimation', 'enterDuration', 'exitDuration', 'backdropBlur',
+        'backdropBlurIncludesCamera', 'hidesScreen', 'hidesCamera', 'aspectRatio',
+      ]);
+      return targetClip;
+    }
 
     // 保留 target 的核心标识与时间参数
     const preservedId = targetClip.id;

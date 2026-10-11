@@ -1,7 +1,7 @@
 {
   "name": "dogsc-windows",
   "productName": "Recly",
-  "version": "0.1.2-win.1",
+  "version": "0.1.2-win.3",
   "description": "Recly 独立 Windows 适配版：录屏、轻量剪辑、自动运镜与导出。公众号：大强同学；官网：dqtx.cc。",
   "author": "大强同学（Windows 适配版维护）",
   "homepage": "https://dqtx.cc",
@@ -11,7 +11,7 @@
   "scripts": {
     "start": "electron .",
     "selftest": "electron . --selftest",
-    "test": "node test/core.test.js && node test/updater.test.js && node test/i18n.test.js && node test/waveform.test.js && node test/projection.test.js && node test/crop-frame.test.js && node test/opening-overlay.test.js && node test/camera-clipboard.test.js && node test/timeline-video-bg.test.js && node test/integration-render.test.js && node test/taskbar.test.js && node test/shortcuts.test.js && node test/shortcuts-ui.test.js && node test/presets-ui.test.js && node test/config.test.js && node test/recorder-ui.test.js && node test/preview.test.js && node test/pointer-recorder.test.js && node test/project-trash.test.js",
+    "test": "node test/core.test.js && node test/updater.test.js && node test/i18n.test.js && node test/waveform.test.js && node test/projection.test.js && node test/crop-frame.test.js && node test/opening-overlay.test.js && node test/camera-clipboard.test.js && node test/timeline-video-bg.test.js && node test/integration-render.test.js && node test/taskbar.test.js && node test/shortcuts.test.js && node test/shortcuts-ui.test.js && node test/presets-ui.test.js && node test/config.test.js && node test/recorder-ui.test.js && node test/preview.test.js && node test/pointer-recorder.test.js && node test/project-trash.test.js && node test/desktop-icons.test.js && node test/recording-icons-lifecycle.test.js && node test/project-copy.test.js && node test/timeline.test.js && node test/editing-backend.test.js && node test/editor-effect-editing.test.js && node test/editor-store-effects.test.js && node test/ripple-playhead.test.js && node test/editor-clipboard-boundaries.test.js && node test/editor-inspector-ui.test.js && node test/editor-overlay-interaction.test.js",
     "package": "node scripts/package.js",
     "extract-i18n": "node scripts/extract-i18n.js"
   },

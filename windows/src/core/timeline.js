@@ -27,18 +27,29 @@ function locate(segments, outputTime) {
   return null;
 }
 
-/// 素材时间 → 输出时间。任意片段序列下，找到当前序列中首个包含 sourceTime 的片段并返回输出时间；
+/// 素材时间 → 输出时间。主片段按 [sourceStart, sourceEnd) 命中；只对素材最大末端保留闭区间定位。
 /// 落在被剪掉的区间时，吸附到素材时间上其后第一段的起点。
 function sourceToOutput(segments, sourceTime) {
   if (!segments || !segments.length) return 0;
   let start = 0;
-  // 1. 在当前序列中寻找首个包含该素材时间的片段
+  // 1. 半开区间优先，确保剪辑接点属于源时间上从此处开始的片段。
   for (const segment of segments) {
     const duration = segmentOutputDuration(segment);
-    if (sourceTime >= segment.sourceStart && sourceTime <= segment.sourceEnd) {
+    if (sourceTime >= segment.sourceStart && sourceTime < segment.sourceEnd) {
       return start + (sourceTime - segment.sourceStart) / segment.speed;
     }
     start += duration;
+  }
+
+  // 素材最大末端没有后继片段，仍需能定位到保留它的片段输出末端。
+  const finalSourceEnd = Math.max(...segments.map((segment) => segment.sourceEnd));
+  if (sourceTime === finalSourceEnd) {
+    start = 0;
+    for (const segment of segments) {
+      const duration = segmentOutputDuration(segment);
+      if (segment.sourceEnd === finalSourceEnd) return start + duration;
+      start += duration;
+    }
   }
 
   // 2. 若落在被剪切的空隙或范围外，吸附到素材时间在 sourceTime 之后的最近保留片段起点
@@ -59,8 +70,11 @@ function sourceToOutput(segments, sourceTime) {
   return outputDuration(segments);
 }
 
-const isRetained = (segments, sourceTime) =>
-  segments.some((segment) => sourceTime >= segment.sourceStart && sourceTime <= segment.sourceEnd);
+function isRetained(segments, sourceTime) {
+  if (!segments || !segments.length || !Number.isFinite(sourceTime)) return false;
+  if (segments.some((segment) => sourceTime >= segment.sourceStart && sourceTime < segment.sourceEnd)) return true;
+  return sourceTime === Math.max(...segments.map((segment) => segment.sourceEnd));
+}
 
 function splitAt(segments, outputTime) {
   const hit = locate(segments, outputTime);
@@ -68,9 +82,64 @@ function splitAt(segments, outputTime) {
   const { index, segment, sourceTime } = hit;
   if (sourceTime - segment.sourceStart < MIN_SEGMENT || segment.sourceEnd - sourceTime < MIN_SEGMENT) return null;
   const next = segments.slice();
+  const copyAudio = () => segment.audio && typeof segment.audio === 'object' ? { audio: { ...segment.audio } } : {};
   next.splice(index, 1,
-    { ...segment, sourceEnd: sourceTime },
-    { ...segment, id: uid(), sourceStart: sourceTime });
+    { ...segment, ...copyAudio(), sourceEnd: sourceTime },
+    { ...segment, ...copyAudio(), id: uid(), sourceStart: sourceTime });
+  return next;
+}
+
+/// 在播放头所在主片段内裁切片段起点或终点。输出时间轴会随片段时长自动闭合。
+function rippleTrimAt(segments, outputTime, edge) {
+  if (!Array.isArray(segments) || !Number.isFinite(outputTime) || !['start', 'end'].includes(edge)) return null;
+  const duration = outputDuration(segments);
+  if (outputTime < 0 || outputTime > duration) return null;
+  const hit = locate(segments, outputTime);
+  if (!hit) return null;
+  const { index, segment, sourceTime } = hit;
+  const boundary = clamp(sourceTime, segment.sourceStart, segment.sourceEnd);
+  if (edge === 'start') {
+    if (segment.sourceEnd - boundary < MIN_SEGMENT || boundary - segment.sourceStart < 1e-6) return null;
+  } else if (boundary - segment.sourceStart < MIN_SEGMENT || segment.sourceEnd - boundary < 1e-6) {
+    return null;
+  }
+  const next = segments.slice();
+  next[index] = edge === 'start'
+    ? { ...segment, sourceStart: boundary }
+    : { ...segment, sourceEnd: boundary };
+  return next;
+}
+
+/// 列出素材时间轴上没有被任何主片段保留的区间。
+function missingRanges(segments, mediaDuration) {
+  if (!Array.isArray(segments) || !Number.isFinite(mediaDuration) || mediaDuration <= 0) return [];
+  const retained = segments
+    .map((segment) => ({
+      sourceStart: clamp(segment.sourceStart, 0, mediaDuration),
+      sourceEnd: clamp(segment.sourceEnd, 0, mediaDuration),
+    }))
+    .filter((range) => range.sourceEnd > range.sourceStart)
+    .sort((a, b) => a.sourceStart - b.sourceStart || a.sourceEnd - b.sourceEnd);
+  const gaps = [];
+  let cursor = 0;
+  for (const range of retained) {
+    if (range.sourceStart > cursor + 1e-6) gaps.push({ sourceStart: cursor, sourceEnd: range.sourceStart });
+    cursor = Math.max(cursor, range.sourceEnd);
+  }
+  if (cursor < mediaDuration - 1e-6) gaps.push({ sourceStart: cursor, sourceEnd: mediaDuration });
+  return gaps;
+}
+
+/// 将已删除的素材区间按输出片段位置插回；范围已保留或与现有片段重叠时拒绝恢复。
+function restoreRange(segments, range, insertionIndex) {
+  if (!Array.isArray(segments) || !range) return null;
+  const sourceStart = Number(range.sourceStart);
+  const sourceEnd = Number(range.sourceEnd);
+  if (!Number.isFinite(sourceStart) || !Number.isFinite(sourceEnd) || sourceStart < 0 || sourceEnd - sourceStart < MIN_SEGMENT) return null;
+  if (segments.some((segment) => sourceStart < segment.sourceEnd - 1e-6 && sourceEnd > segment.sourceStart + 1e-6)) return null;
+  const segment = { id: uid(), sourceStart, sourceEnd, speed: 1 };
+  const next = segments.slice();
+  next.splice(clamp(Math.floor(Number(insertionIndex) || 0), 0, next.length), 0, segment);
   return next;
 }
 
@@ -192,17 +261,74 @@ function remapClipsOnReorder(clips, oldSegments, newSegments, timeKey = 'startTi
 /// 拖动片段边缘裁短／恢复：不越过相邻片段，也不超出素材。
 function trimSegment(segments, id, edge, sourceTime, mediaDuration) {
   const index = segments.findIndex((segment) => segment.id === id);
-  if (index < 0) return null;
+  if (index < 0 || !['start', 'end'].includes(edge) || !Number.isFinite(sourceTime)) return null;
   const segment = segments[index];
   const next = segments.slice();
+  const overlaps = (other) => other.sourceStart < segment.sourceEnd && other.sourceEnd > segment.sourceStart;
   if (edge === 'start') {
-    const lower = index > 0 ? segments[index - 1].sourceEnd : 0;
+    const lower = segments
+      .filter((other) => other.id !== id && (other.sourceEnd <= segment.sourceStart || overlaps(other)))
+      .reduce((bound, other) => Math.max(bound, other.sourceEnd), 0);
+    if (lower > segment.sourceEnd - MIN_SEGMENT) return null;
     next[index] = { ...segment, sourceStart: clamp(sourceTime, lower, segment.sourceEnd - MIN_SEGMENT) };
   } else {
-    const upper = index + 1 < segments.length ? segments[index + 1].sourceStart : mediaDuration;
+    const upper = segments
+      .filter((other) => other.id !== id && (other.sourceStart >= segment.sourceEnd || overlaps(other)))
+      .reduce((bound, other) => Math.min(bound, other.sourceStart), Number.isFinite(mediaDuration) ? mediaDuration : segment.sourceEnd);
+    if (upper < segment.sourceStart + MIN_SEGMENT) return null;
     next[index] = { ...segment, sourceEnd: clamp(sourceTime, segment.sourceStart + MIN_SEGMENT, upper) };
   }
   return next;
+}
+
+/// 将麦克风/系统音波形按主片段源区间、速度与音轨 offset 映射到该片段的输出显示序列。
+function waveformSamplesForSegment(segment, tracks, sampleCount) {
+  const count = Math.max(1, Math.floor(sampleCount) || 1);
+  const result = new Array(count).fill(0);
+  const duration = segmentOutputDuration(segment);
+  const audioTracks = Array.isArray(tracks) ? tracks : [];
+  for (let index = 0; index < count; index++) {
+    const sourceTime = segment.sourceStart + ((index + 0.5) / count) * duration * segment.speed;
+    for (const track of audioTracks) {
+      if (!track || !Array.isArray(track.samples) || !track.samples.length || !Number.isFinite(track.duration) || track.duration <= 0) continue;
+      const audioTime = sourceTime - (Number.isFinite(track.offset) ? track.offset : 0);
+      if (audioTime < 0 || audioTime >= track.duration) continue;
+      const sampleIndex = Math.min(Math.floor((audioTime / track.duration) * track.samples.length), track.samples.length - 1);
+      result[index] = Math.max(result[index], track.samples[sampleIndex] || 0);
+    }
+  }
+  return result;
+}
+
+/// 把按素材时间记录的效果片段投影到主片段序列；一个效果可在重排/剪切后显示为多个可见块。
+function mapEffectClipsToOutput(segments, pools) {
+  const result = {};
+  let segmentOutputStart = 0;
+  for (const kind of Object.keys(pools || {})) result[kind] = [];
+  for (let segmentIndex = 0; segmentIndex < (segments || []).length; segmentIndex++) {
+    const segment = segments[segmentIndex];
+    const segmentDuration = segmentOutputDuration(segment);
+    for (const [kind, clips] of Object.entries(pools || {})) {
+      for (const clip of clips || []) {
+        const sourceStart = clip.timing?.startTime ?? clip.startTime;
+        const sourceEnd = clip.timing
+          ? sourceStart + (clip.timing.duration || 0)
+          : clip.endTime;
+        const intersectionStart = Math.max(segment.sourceStart, sourceStart);
+        const intersectionEnd = Math.min(segment.sourceEnd, sourceEnd);
+        if (!Number.isFinite(intersectionStart) || intersectionEnd - intersectionStart < 1e-6) continue;
+        result[kind].push({
+          kind, clip, segment, segmentIndex,
+          sourceStart: intersectionStart,
+          sourceEnd: intersectionEnd,
+          outputStart: segmentOutputStart + (intersectionStart - segment.sourceStart) / segment.speed,
+          outputEnd: segmentOutputStart + (intersectionEnd - segment.sourceStart) / segment.speed,
+        });
+      }
+    }
+    segmentOutputStart += segmentDuration;
+  }
+  return result;
 }
 
 function setSpeed(segments, id, speed) {
@@ -212,6 +338,7 @@ function setSpeed(segments, id, speed) {
 module.exports = {
   MIN_SEGMENT, SPEEDS,
   segmentOutputDuration, outputDuration, locate, sourceToOutput, isRetained,
-  splitAt, removeSegment, trimSegment, setSpeed,
+  splitAt, rippleTrimAt, missingRanges, restoreRange, removeSegment, trimSegment, setSpeed,
   moveSegment, reorderSegments, reorderedOutputOffset, remapClipsOnReorder,
+  waveformSamplesForSegment, mapEffectClipsToOutput,
 };

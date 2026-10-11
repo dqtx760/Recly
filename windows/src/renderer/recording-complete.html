@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <title>录制完成</title>
+  <link rel="stylesheet" href="recording-complete.css">
+</head>
+<body>
+  <main class="complete-card" aria-live="polite">
+    <button class="close" id="close" type="button" title="关闭提示">×</button>
+    <div class="heading">
+      <span class="check" aria-hidden="true">✓</span>
+      <strong>录制完成</strong>
+      <span class="duration" id="duration"></span>
+    </div>
+    <div class="thumbnail-frame">
+      <img id="thumbnail" alt="录制画面缩略图" hidden>
+      <div class="thumbnail-placeholder" id="thumbnail-placeholder">视频缩略图生成中…</div>
+    </div>
+    <div class="project-name" id="project-name">正在载入项目…</div>
+    <div class="save-path" id="save-path"></div>
+    <div class="actions">
+      <button id="save-copy" type="button">保存项目…</button>
+      <button class="primary" id="edit" type="button">进入编辑</button>
+    </div>
+    <div class="message" id="message" hidden></div>
+  </main>
+  <script src="recording-complete.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@
 
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { PATTERN_PRESETS } = require('../../core/model');
+const { clamp, PATTERN_PRESETS } = require('../../core/model');
 const { cursorLibrary } = require('./cursors');
 
 function roundedRect(ctx, rect, radius) {
@@ -111,6 +111,57 @@ function createOffscreenCanvas(width, height) {
   return createMockCanvas(w, h);
 }
 
+function expandPolygon(points, distance) {
+  if (distance <= 0 || points.length < 3) return points;
+  const area = points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * next.y - next.x * point.y;
+  }, 0);
+  if (Math.abs(area) < 1e-9) return points;
+
+  const direction = area > 0 ? 1 : -1;
+  const edges = points.map((point, index) => {
+    const next = points[(index + 1) % points.length];
+    const dx = next.x - point.x;
+    const dy = next.y - point.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 1e-9) return null;
+    return {
+      dx,
+      dy,
+      nx: direction * dy / length,
+      ny: direction * -dx / length,
+    };
+  });
+  if (edges.some((edge) => !edge)) return points;
+
+  return points.map((point, index) => {
+    const previous = edges[(index + points.length - 1) % points.length];
+    const current = edges[index];
+    const previousOrigin = { x: point.x + previous.nx * distance, y: point.y + previous.ny * distance };
+    const currentOrigin = { x: point.x + current.nx * distance, y: point.y + current.ny * distance };
+    const denominator = previous.dx * current.dy - previous.dy * current.dx;
+    let expanded;
+    if (Math.abs(denominator) < 1e-9) {
+      expanded = {
+        x: point.x + (previous.nx + current.nx) * distance / 2,
+        y: point.y + (previous.ny + current.ny) * distance / 2,
+      };
+    } else {
+      const offsetX = currentOrigin.x - previousOrigin.x;
+      const offsetY = currentOrigin.y - previousOrigin.y;
+      const factor = (offsetX * current.dy - offsetY * current.dx) / denominator;
+      expanded = { x: previousOrigin.x + factor * previous.dx, y: previousOrigin.y + factor * previous.dy };
+    }
+    const offsetX = expanded.x - point.x;
+    const offsetY = expanded.y - point.y;
+    const offsetLength = Math.hypot(offsetX, offsetY);
+    return offsetLength > 2
+      ? { x: point.x + offsetX * 2 / offsetLength, y: point.y + offsetY * 2 / offsetLength }
+      : expanded;
+  });
+}
+
 function drawTexturedTriangle(ctx, image, src, dst) {
   const [x0, y0] = [src[0].x, src[0].y];
   const [x1, y1] = [src[1].x, src[1].y];
@@ -130,12 +181,13 @@ function drawTexturedTriangle(ctx, image, src, dst) {
   const b = ((v0 - v2) * (y1 - y2) - (v1 - v2) * (y0 - y2)) / delta;
   const d = ((x0 - x2) * (v1 - v2) - (x1 - x2) * (v0 - v2)) / delta;
   const f = v0 - b * x0 - d * y0;
+  const clipPoints = expandPolygon(dst, 0.5);
 
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(u0, v0);
-  ctx.lineTo(u1, v1);
-  ctx.lineTo(u2, v2);
+  ctx.moveTo(clipPoints[0].x, clipPoints[0].y);
+  ctx.lineTo(clipPoints[1].x, clipPoints[1].y);
+  ctx.lineTo(clipPoints[2].x, clipPoints[2].y);
   ctx.closePath();
   ctx.clip();
   ctx.transform(a, b, c, d, e, f);
@@ -154,6 +206,21 @@ function renderPerspectiveMesh(ctx, image, sourceRect, quad, subdivisions = 8) {
   const N = Math.max(subdivisions, 2);
   const sw = sourceRect.width;
   const sh = sourceRect.height;
+
+  // 三角形之间允许半像素重叠，补齐 Canvas 对各 clip 边分别抗锯齿形成的透底缝。
+  // 外轮廓仍以投影四边形统一裁切，避免扩展改变屏幕卡片边界。
+  const outerCorners = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+  const hasOuterCorners = outerCorners.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y));
+  ctx.save();
+  if (hasOuterCorners) {
+    ctx.beginPath();
+    ctx.moveTo(outerCorners[0].x, outerCorners[0].y);
+    for (let index = 1; index < outerCorners.length; index++) {
+      ctx.lineTo(outerCorners[index].x, outerCorners[index].y);
+    }
+    ctx.closePath();
+    ctx.clip();
+  }
 
   for (let i = 0; i < N; i++) {
     const u0 = i / N;
@@ -192,13 +259,18 @@ function renderPerspectiveMesh(ctx, image, sourceRect, quad, subdivisions = 8) {
       );
     }
   }
+  ctx.restore();
 }
 
 function loadImage(file) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    if (typeof Image === 'undefined') {
+      reject(new Error(`当前环境无法解码图片素材：${file}`));
+      return;
+    }
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => resolve(null);
+    image.onerror = () => reject(new Error(`无法加载图片素材：${file}`));
     image.src = pathToFileURL(file).href;
   });
 }
@@ -206,27 +278,72 @@ class Compositor {
   constructor(directory) {
     this.directory = directory;
     this.images = new Map();
+    this.imageLoads = new Map();
+    this.assetKey = null;
+    this.prepareGeneration = 0;
     this.backgroundKey = null;
     this.background = null;
     this.cursors = cursorLibrary();
   }
 
+  imageFile(relativePath) {
+    return path.isAbsolute(relativePath) ? relativePath : path.join(this.directory, relativePath);
+  }
+
   backgroundFile(background) {
-    if (background.kind === 'image') return path.isAbsolute(background.file) ? background.file : path.join(this.directory, background.file);
+    if (background?.kind === 'image' && background.file) return this.imageFile(background.file);
     return null;
+  }
+
+  async loadImage(file) {
+    if (this.images.has(file)) return this.images.get(file);
+    if (!this.imageLoads.has(file)) {
+      const pending = loadImage(file).then((image) => {
+        this.images.set(file, image);
+        return image;
+      }).finally(() => this.imageLoads.delete(file));
+      this.imageLoads.set(file, pending);
+    }
+    return this.imageLoads.get(file);
   }
 
   /// 背景图片异步解码；预览在加载完成后通过 onReady 重画，导出前显式 await。
   async prepare(project) {
-    const file = this.backgroundFile(project.canvas.background);
-    if (file && !this.images.has(file)) this.images.set(file, await loadImage(file));
+    const files = new Set();
+    if (project.canvas.background?.kind === 'image' && !project.canvas.background.file) {
+      throw new Error('背景图片缺少素材路径');
+    }
+    const backgroundFile = this.backgroundFile(project.canvas.background);
+    if (backgroundFile) files.add(backgroundFile);
+    for (const sticker of project.timeline?.stickerClips || []) {
+      if (!sticker.relativePath) {
+        if (!sticker.image) throw new Error(`贴图片段缺少图片素材路径：${sticker.id || '未知片段'}`);
+        continue;
+      }
+      files.add(this.imageFile(sticker.relativePath));
+    }
+    const key = [...files].sort().join('\n');
+    const generation = ++this.prepareGeneration;
+    await Promise.all([...files].map((file) => this.loadImage(file)));
+    if (generation !== this.prepareGeneration) return;
+    if (key !== this.assetKey) this.backgroundKey = null;
+    this.assetKey = key;
+    for (const file of this.images.keys()) {
+      if (!files.has(file)) this.images.delete(file);
+    }
   }
 
   /// 背景整张缓存：点阵每帧重画上千个圆不划算，背景又不随时间变化。
-  backgroundLayer(canvas, width, height, styleScale) {
+  backgroundLayer(canvas, width, height, styleScale, outputTime = 0) {
     const file = this.backgroundFile(canvas.background);
     const image = file ? this.images.get(file) : null;
-    const key = JSON.stringify([canvas.background, canvas.backgroundBlur, canvas.patternScale, canvas.patternOpacity, width, height, Boolean(image)]);
+    const motion = canvas.background?.kind === 'pattern' ? (canvas.patternMotion ?? 0) : 0;
+    const key = JSON.stringify([canvas.background, canvas.backgroundBlur, canvas.patternScale, canvas.patternOpacity, motion, width, height, Boolean(image)]);
+    if (motion !== 0) {
+      const layer = createOffscreenCanvas(width, height);
+      this.drawPattern(layer.getContext('2d', { alpha: false }), PATTERN_PRESETS[canvas.background.preset] || PATTERN_PRESETS.obsidianGrid, canvas, width, height, outputTime);
+      return layer;
+    }
     if (this.backgroundKey === key) return this.background;
     const layer = createOffscreenCanvas(width, height);
     const ctx = layer.getContext('2d', { alpha: false });
@@ -255,14 +372,15 @@ class Compositor {
     return layer;
   }
 
-  drawPattern(ctx, preset, canvas, width, height) {
+  drawPattern(ctx, preset, canvas, width, height, outputTime = 0) {
     ctx.fillStyle = preset.background;
     ctx.fillRect(0, 0, width, height);
     const shortEdge = Math.max(Math.min(width, height), 2);
     const tile = Math.max(shortEdge * preset.fraction * canvas.patternScale, 9);
     ctx.globalAlpha = Math.min(Math.max(canvas.patternOpacity, 0), 1);
     // 图案以画布中心为基准铺开，换分辨率时构图不漂移。
-    const originX = (width / 2) % tile;
+    const motionOffset = (Number(canvas.patternMotion) || 0) * Math.max(outputTime, 0);
+    const originX = ((width / 2 + motionOffset) % tile + tile) % tile;
     const originY = (height / 2) % tile;
     if (preset.kind === 'dots') {
       ctx.fillStyle = preset.dot;
@@ -298,6 +416,23 @@ class Compositor {
     ctx.globalAlpha = 1;
   }
 
+  drawVideoBackground(ctx, canvas, width, height, styleScale, frame) {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, width, height);
+    if (!frame) return;
+    const source = frameSize(frame);
+    const scale = Math.max(width / Math.max(source.width, 1), height / Math.max(source.height, 1));
+    const blur = Math.max(canvas.backgroundBlur ?? 0, 0) * styleScale;
+    const bleed = blur * 3;
+    const drawWidth = source.width * scale + bleed * 2;
+    const drawHeight = source.height * scale + bleed * 2;
+    ctx.save();
+    if (blur > 0) ctx.filter = `blur(${blur}px)`;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(frame, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+    ctx.restore();
+  }
+
   drawShadow(ctx, rect, radius, shadow) {
     if (!shadow || shadow.opacity <= 0) return;
     ctx.save();
@@ -315,14 +450,15 @@ class Compositor {
     if (frame) {
       if (crop && (crop.width < 0.999 || crop.height < 0.999 || crop.x > 0.001 || crop.y > 0.001)) {
         const sourceSize = frameSize(frame);
-        const sRect = crop.cropSourceRect
+        const cropRect = crop.cropSourceRect
           ? crop.cropSourceRect(sourceSize.width, sourceSize.height)
-          : {
-              x: crop.x * sourceSize.width,
-              y: crop.y * sourceSize.height,
-              width: crop.width * sourceSize.width,
-              height: crop.height * sourceSize.height,
-            };
+          : { sx: crop.x * sourceSize.width, sy: crop.y * sourceSize.height, sw: crop.width * sourceSize.width, sh: crop.height * sourceSize.height };
+        const sRect = {
+          x: cropRect.sx ?? cropRect.x,
+          y: cropRect.sy ?? cropRect.y,
+          width: cropRect.sw ?? cropRect.width,
+          height: cropRect.sh ?? cropRect.height,
+        };
         ctx.drawImage(frame, sRect.x, sRect.y, sRect.width, sRect.height, rect.x, rect.y, rect.width, rect.height);
       } else {
         ctx.drawImage(frame, rect.x, rect.y, rect.width, rect.height);
@@ -333,16 +469,28 @@ class Compositor {
     }
   }
 
-  drawMosaics(ctx, mosaics, rect, frame) {
+  drawMosaics(ctx, mosaics, rect, frame, crop) {
     if (!mosaics || !mosaics.length) return;
+    const visibleCrop = crop || { x: 0, y: 0, width: 1, height: 1 };
     for (const mosaic of mosaics) {
       const progress = mosaic.transitionProgress ?? mosaic.progress ?? 1;
       if (progress <= 0.001) continue;
 
-      const mx = rect.x + mosaic.sourceRect.x * rect.width;
-      const my = rect.y + mosaic.sourceRect.y * rect.height;
-      const mw = mosaic.sourceRect.width * rect.width;
-      const mh = mosaic.sourceRect.height * rect.height;
+      const source = mosaic.sourceRect;
+      const left = Math.max(source.x, visibleCrop.x);
+      const top = Math.max(source.y, visibleCrop.y);
+      const right = Math.min(source.x + source.width, visibleCrop.x + visibleCrop.width);
+      const bottom = Math.min(source.y + source.height, visibleCrop.y + visibleCrop.height);
+      if (right <= left || bottom <= top) continue;
+      const x0 = (left - visibleCrop.x) / visibleCrop.width;
+      const y0 = (top - visibleCrop.y) / visibleCrop.height;
+      const x1 = (right - visibleCrop.x) / visibleCrop.width;
+      const y1 = (bottom - visibleCrop.y) / visibleCrop.height;
+      // rect 已是裁切与缩放后的 finalRect；源区域只需映射到裁切局部空间。
+      const mx = rect.x + x0 * rect.width;
+      const my = rect.y + y0 * rect.height;
+      const mw = (x1 - x0) * rect.width;
+      const mh = (y1 - y0) * rect.height;
       const cr = Math.min(mw, mh) * (mosaic.cornerRadius || 0);
 
       if (mosaic.style === 'blur') {
@@ -352,7 +500,7 @@ class Compositor {
         const blurRadius = (4 + (mosaic.intensity ?? 0.55) * 44) * progress;
         if (frame) {
           ctx.filter = `blur(${blurRadius}px)`;
-          this.drawScreenContent(ctx, rect, frame, null);
+          this.drawScreenContent(ctx, rect, frame, visibleCrop);
           ctx.filter = 'none';
         } else {
           ctx.fillStyle = `rgba(255, 255, 255, ${0.28 * progress})`;
@@ -482,7 +630,7 @@ class Compositor {
       offCtx.clip();
       this.drawScreenContent(offCtx, contentRect, frame, screen.crop);
       if (screen.mosaics && screen.mosaics.length) {
-        this.drawMosaics(offCtx, screen.mosaics, contentRect, frame);
+        this.drawMosaics(offCtx, screen.mosaics, contentRect, frame, screen.crop);
       }
       offCtx.restore();
     } else {
@@ -499,7 +647,7 @@ class Compositor {
       offCtx.clip();
       this.drawScreenContent(offCtx, rect, frame, screen.crop);
       if (screen.mosaics && screen.mosaics.length) {
-        this.drawMosaics(offCtx, screen.mosaics, rect, frame);
+        this.drawMosaics(offCtx, screen.mosaics, rect, frame, screen.crop);
       }
       offCtx.restore();
     }
@@ -587,7 +735,7 @@ class Compositor {
       ctx.clip();
       this.drawScreenContent(ctx, contentRect, frame, screen.crop);
       if (screen.mosaics && screen.mosaics.length) {
-        this.drawMosaics(ctx, screen.mosaics, contentRect, frame);
+        this.drawMosaics(ctx, screen.mosaics, contentRect, frame, screen.crop);
       }
       ctx.restore();
     } else {
@@ -607,7 +755,7 @@ class Compositor {
       ctx.clip();
       this.drawScreenContent(ctx, rect, frame, screen.crop);
       if (screen.mosaics && screen.mosaics.length) {
-        this.drawMosaics(ctx, screen.mosaics, rect, frame);
+        this.drawMosaics(ctx, screen.mosaics, rect, frame, screen.crop);
       }
       ctx.restore();
     }
@@ -699,15 +847,18 @@ class Compositor {
     ctx.clip();
     if (frame) {
       const source = frameSize(frame);
-      const scale = Math.max(rect.width / Math.max(source.width, 1), rect.height / Math.max(source.height, 1));
+      const fillScale = Math.max(rect.width / Math.max(source.width, 1), rect.height / Math.max(source.height, 1));
+      const scale = fillScale * Math.max(camera.contentScale ?? 1, 1);
       const w = source.width * scale;
       const h = source.height * scale;
+      const position = camera.contentPosition || { x: 0.5, y: 0.5 };
+      const focusX = camera.isMirrored ? 1 - position.x : position.x;
       if (camera.isMirrored) {
         ctx.translate(rect.x * 2 + rect.width, 0);
         ctx.scale(-1, 1);
       }
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(frame, rect.x + (rect.width - w) / 2, rect.y + (rect.height - h) / 2, w, h);
+      ctx.drawImage(frame, rect.x + (rect.width - w) * focusX, rect.y + (rect.height - h) * position.y, w, h);
     } else {
       ctx.fillStyle = '#1b1c20';
       ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
@@ -755,31 +906,43 @@ class Compositor {
       ctx.clip();
 
       const img = (frames && frames.stickers && frames.stickers[sticker.id]) ||
-        (sticker.relativePath && this.images && this.images.get(sticker.relativePath)) ||
+        (sticker.relativePath && this.images && this.images.get(this.imageFile(sticker.relativePath))) ||
         sticker.image;
 
       if (img) {
         ctx.drawImage(img, sRect.x, sRect.y, sRect.width, sRect.height);
       } else {
-        ctx.fillStyle = sticker.clip?.backgroundColor || '#2A2B30';
-        ctx.fillRect(sRect.x, sRect.y, sRect.width, sRect.height);
+        throw new Error(`贴图图片素材不可用：${sticker.relativePath || sticker.clip?.relativePath || sticker.id}`);
       }
       ctx.restore();
       ctx.restore();
     }
   }
 
-  /// frames: { screen, camera }，可以是 <video> 或 WebCodecs VideoFrame。
+  /// frames: { screen, camera, background }，可以是 <video> 或 WebCodecs VideoFrame。
   draw(ctx, project, scene, frames) {
     const { width, height } = scene;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(this.backgroundLayer(project.canvas, width, height, scene.styleScale), 0, 0);
-    this.drawScreen(ctx, scene.screen, frames.screen);
-    if (scene.cursor) this.drawCursor(ctx, scene.screen, scene.cursor);
-    if (scene.camera && (frames.camera || frames.drawCameraPlaceholder)) this.drawCamera(ctx, scene.camera, frames.camera);
+    if (project.canvas.background?.kind === 'video') {
+      this.drawVideoBackground(ctx, project.canvas, width, height, scene.styleScale, frames.background || null);
+    } else {
+      ctx.drawImage(this.backgroundLayer(project.canvas, width, height, scene.styleScale, scene.outputTime ?? 0), 0, 0);
+    }
+    const screenVisibility = 1 - clamp(scene.stickerBackdrop?.screenSuppression ?? 0, 0, 1);
+    if (screenVisibility > 0.001) {
+      ctx.save();
+      ctx.globalAlpha *= screenVisibility;
+      this.drawScreen(ctx, scene.screen, frames.screen);
+      if (scene.cursor) this.drawCursor(ctx, scene.screen, scene.cursor);
+      ctx.restore();
+    }
+    const cameraVisibility = 1 - clamp(scene.stickerBackdrop?.cameraSuppression ?? 0, 0, 1);
+    if (scene.camera && cameraVisibility > 0.001 && (frames.camera || frames.drawCameraPlaceholder)) {
+      this.drawCamera(ctx, { ...scene.camera, opacity: (scene.camera.opacity ?? 1) * cameraVisibility }, frames.camera);
+    }
     if (scene.stickers && scene.stickers.length) this.drawStickers(ctx, scene.stickers, frames);
   }
 }

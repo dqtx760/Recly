@@ -1,17 +1,20 @@
 'use strict';
 // DogSC Windows 版主进程：窗口管理、录制调度、项目库与导出混流。
 
-const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShortcut, session, shell, Menu, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShortcut, session, shell, Menu, Tray, clipboard, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const media = require('./ffmpeg');
 const { RecordingSession, listDisplays, PROJECT_EXTENSION } = require('./recording');
+const { copyProjectToFolder } = require('./project-copy');
 const { normalizeProject } = require('../core/model');
 
 const { registerPresetsIpc } = require('./presets');
 const { registerUpdaterIpc } = require('./updater');
-const { getProjectsRoot, registerConfigIpc } = require('./config');
+const { getProjectsRoot, getHideDesktopIconsDuringRecording, registerConfigIpc } = require('./config');
 const { trashProjects } = require('./project-trash');
+const { importAsset, readClipboardImage } = require('./asset-import');
 const {
   autoHideTaskbar,
   restoreTaskbar,
@@ -42,6 +45,8 @@ let memoWindow = null;
 let windowSourcesCache = null;
 let windowSourcesPending = null;
 const editorWindows = new Map();
+const completionWindows = new Map();
+const completionThumbnailPromises = new Map();
 function initShortcuts() {
   registerShortcuts({
     recordToggle: () => {
@@ -76,8 +81,14 @@ function initShortcuts() {
 
 let recording = null;
 let preparing = null;
+let startingRecording = null;
+let finishingRecording = null;
 let environment = { ok: false, reason: '正在检查 ffmpeg…' };
 let activeExport = null;
+
+function hasRecordingWork() {
+  return Boolean(recording || preparing || startingRecording || finishingRecording);
+}
 
 function createWindow(file, options = {}, query = {}) {
   const win = new BrowserWindow({
@@ -100,7 +111,8 @@ function excludeFromCapture(win, keepOnTop = false) {
 
 function updateTrayState() {
   if (!tray || tray.isDestroyed()) return;
-  const isRecording = Boolean(recording);
+  const isRecording = Boolean(recording || startingRecording || finishingRecording);
+  const hasUnfinishedRecording = hasRecordingWork();
   const tooltip = isRecording ? 'Recly: 录制中 (Ctrl+Alt+R 停止)' : 'Recly 屏幕录制';
   tray.setToolTip(tooltip);
 
@@ -122,6 +134,7 @@ function updateTrayState() {
     { type: 'separator' },
     {
       label: '退出',
+      enabled: !hasUnfinishedRecording,
       click: () => {
         app.quit();
       },
@@ -161,7 +174,7 @@ function showRecorder() {
   }
   const area = screen.getPrimaryDisplay().workArea;
   const width = 480;
-  const height = 580;
+  const height = 624;
   recorderWindow = createWindow('recorder.html', {
     width, height,
     useContentSize: true,
@@ -174,6 +187,12 @@ function showRecorder() {
   recorderWindow.setIgnoreMouseEvents(false);
   excludeFromCapture(recorderWindow);
   recorderWindow.once('ready-to-show', () => recorderWindow.show());
+  recorderWindow.on('close', (event) => {
+    if (hasRecordingWork()) {
+      event.preventDefault();
+      recorderWindow.hide();
+    }
+  });
   recorderWindow.on('closed', () => {
     recorderWindow = null;
     for (const win of [cameraWindow, memoWindow]) if (win && !win.isDestroyed()) win.close();
@@ -296,6 +315,67 @@ async function listWindows() {
   return windowSourcesPending;
 }
 
+function arrangeCompletionWindows() {
+  const area = screen.getPrimaryDisplay().workArea;
+  const width = 356;
+  const height = 336;
+  const margin = 16;
+  const gap = 12;
+  const maxCards = Math.max(1, Math.min(3, Math.floor((area.height - margin * 2 + gap) / (height + gap))));
+  const active = [...completionWindows.entries()].filter(([, win]) => !win.isDestroyed());
+  while (active.length > maxCards) {
+    const [oldestDirectory, oldest] = active.shift();
+    if (completionWindows.get(oldestDirectory) === oldest) completionWindows.delete(oldestDirectory);
+    if (!oldest.isDestroyed()) oldest.close();
+  }
+  const x = Math.max(area.x + margin, area.x + area.width - width - margin);
+  active.slice().reverse().forEach(([, win], index) => {
+    const y = Math.round(area.y + area.height - height - margin - index * (height + gap));
+    win.setPosition(x, y);
+  });
+}
+
+function setCompletionWindowsVisible(visible) {
+  for (const win of completionWindows.values()) {
+    if (win.isDestroyed()) continue;
+    if (visible) win.showInactive();
+    else win.hide();
+  }
+}
+
+function showRecordingComplete(result) {
+  const existing = completionWindows.get(result.directory);
+  if (existing && !existing.isDestroyed()) existing.close();
+
+  const win = createWindow('recording-complete.html', {
+    width: 353, height: 336, useContentSize: true,
+    frame: false, transparent: true, resizable: false, maximizable: false,
+    skipTaskbar: true, hasShadow: false, title: '录制完成',
+  });
+  completionWindows.set(result.directory, win);
+  excludeFromCapture(win, true);
+  win.on('closed', () => {
+    if (completionWindows.get(result.directory) === win) completionWindows.delete(result.directory);
+    arrangeCompletionWindows();
+  });
+  win.webContents.once('did-finish-load', () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('recording-complete:data', {
+        directory: result.directory,
+        name: result.name,
+        duration: result.duration,
+        thumbnailUrl: result.thumbnailUrl || '',
+      });
+    }
+  });
+  win.once('ready-to-show', () => {
+    arrangeCompletionWindows();
+    win.showInactive();
+  });
+  arrangeCompletionWindows();
+  return win;
+}
+
 async function refreshWindows() {
   if (windowSourcesPending) await windowSourcesPending.catch(() => {});
   windowSourcesCache = null;
@@ -387,25 +467,42 @@ function registerIpc() {
   // 录制分两步启动：先建好项目目录，让录制条把摄像头、麦克风、系统声音先录起来，
   // 再开始屏幕采集。这样附加轨一定早于屏幕首帧，成片从第一帧起就有画中画和声音。
   ipcMain.handle('recorder:prepare', (event, { selection, frameRate }) => {
-    if (recording) throw new Error('已经在录制中');
+    if (hasRecordingWork()) throw new Error('当前录制尚未结束，不能开始另一段录制');
     if (!environment.ok) throw new Error(environment.reason);
-    if (preparing) fs.rmSync(preparing.directory, { recursive: true, force: true });
     fs.mkdirSync(projectsRoot(), { recursive: true });
-    preparing = new RecordingSession({ projectsRoot: projectsRoot(), selection, frameRate });
+    preparing = new RecordingSession({
+      projectsRoot: projectsRoot(), selection, frameRate,
+      hideDesktopIconsDuringRecording: getHideDesktopIconsDuringRecording(),
+    });
     fs.mkdirSync(preparing.mediaDirectory, { recursive: true });
+    updateTrayState();
     return { mediaDirectory: preparing.mediaDirectory };
   });
   ipcMain.handle('recorder:start', async () => {
     if (!preparing) throw new Error('录制还没有准备好');
     const sessionState = preparing;
     preparing = null;
-    autoHideTaskbar();
+    startingRecording = sessionState;
+    updateTrayState();
+    setCompletionWindowsVisible(false);
+    let sessionStartInvoked = false;
     let started;
     try {
+      autoHideTaskbar();
+      sessionStartInvoked = true;
       started = await sessionState.start();
     } catch (error) {
+      if (!sessionStartInvoked) {
+        try { await sessionState.discard(); } catch (cleanupError) {
+          console.warn('[DogSC] 录制启动前清理失败：', cleanupError.message || cleanupError);
+        }
+      }
       restoreTaskbar();
+      setCompletionWindowsVisible(true);
       throw error;
+    } finally {
+      startingRecording = null;
+      updateTrayState();
     }
     recording = sessionState;
     updateTrayState();
@@ -416,26 +513,94 @@ function registerIpc() {
     if (!recording) throw new Error('当前没有在录制');
     const sessionState = recording;
     recording = null;
-    updateTrayState();
-    restoreTaskbar();
-    const result = await sessionState.finish(tracks, (stage) => event.sender.send('recorder:stage', stage));
+    finishingRecording = sessionState;
+    let result;
+    let finishInvoked = false;
+    try {
+      updateTrayState();
+      restoreTaskbar();
+      finishInvoked = true;
+      result = await sessionState.finish(tracks, (stage) => event.sender.send('recorder:stage', stage));
+    } catch (error) {
+      if (!finishInvoked) {
+        try { await sessionState.discard(); } catch (cleanupError) {
+          console.warn('[DogSC] 结束录制失败后的清理未完成：', cleanupError.message || cleanupError);
+        }
+      }
+      sessionState.restoreDesktopIcons();
+      restoreTaskbar();
+      setCompletionWindowsVisible(true);
+      throw error;
+    } finally {
+      finishingRecording = null;
+      updateTrayState();
+    }
     if (libraryWindow && !libraryWindow.isDestroyed()) libraryWindow.webContents.send('library:refresh');
     result.thumbnailsReady?.then(() => {
       if (libraryWindow && !libraryWindow.isDestroyed()) libraryWindow.webContents.send('library:refresh');
     });
     const { media: recorded } = result.project;
+    const completion = {
+      directory: result.directory,
+      name: result.project.name,
+      duration: recorded.screen.duration,
+      thumbnailUrl: fs.existsSync(path.join(result.directory, 'media', 'thumbnails.jpg'))
+        ? pathToFileURL(path.join(result.directory, 'media', 'thumbnails.jpg')).href
+        : '',
+    };
+    showRecordingComplete(completion);
+    setCompletionWindowsVisible(true);
+    if (result.thumbnailsReady) {
+      const thumbnailPromise = result.thumbnailsReady.then((ready) => {
+        if (!ready) return;
+        const thumbnailUrl = pathToFileURL(path.join(result.directory, 'media', 'thumbnails.jpg')).href;
+        const win = completionWindows.get(result.directory);
+        if (win && !win.isDestroyed()) win.webContents.send('recording-complete:thumbnail', thumbnailUrl);
+      });
+      completionThumbnailPromises.set(result.directory, thumbnailPromise);
+      thumbnailPromise.then(
+        () => completionThumbnailPromises.delete(result.directory),
+        () => completionThumbnailPromises.delete(result.directory),
+      );
+    }
     return {
       directory: result.directory, name: result.project.name, duration: recorded.screen.duration,
       recorded: { camera: Boolean(recorded.camera), microphone: Boolean(recorded.microphone), system: Boolean(recorded.systemAudio) },
     };
   });
-  ipcMain.handle('recorder:cancel', async () => {
-    if (!recording) return;
-    const sessionState = recording;
-    recording = null;
-    updateTrayState();
-    restoreTaskbar();
-    await sessionState.discard();
+  ipcMain.handle('recorder:cancel', async (event, phase = 'preparing') => {
+    if (startingRecording || finishingRecording) throw new Error('录制正在启动或整理，请完成当前步骤后再取消');
+    const sessionState = phase === 'recording' ? recording : preparing;
+    if (!sessionState) return;
+    if (recording === sessionState) recording = null;
+    if (preparing === sessionState) preparing = null;
+    finishingRecording = sessionState;
+    try {
+      try { updateTrayState(); } catch (error) {
+        console.warn('[DogSC] 更新录制托盘状态失败：', error.message || error);
+      }
+      try { restoreTaskbar(); } catch (error) {
+        console.warn('[DogSC] 恢复任务栏状态失败：', error.message || error);
+      }
+      await sessionState.discard();
+    } finally {
+      sessionState.restoreDesktopIcons();
+      finishingRecording = null;
+      setCompletionWindowsVisible(true);
+      updateTrayState();
+    }
+  });
+
+  ipcMain.handle('recording-complete:save-copy', async (event, sourceDirectory) => {
+    const source = path.resolve(String(sourceDirectory || ''));
+    const dialogResult = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: '选择项目副本的保存位置',
+      defaultPath: path.dirname(source),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (!dialogResult || dialogResult.canceled || !dialogResult.filePaths || !dialogResult.filePaths[0]) return null;
+    await completionThumbnailPromises.get(source);
+    return copyProjectToFolder(source, dialogResult.filePaths[0]);
   });
   ipcMain.on('recorder:camera-preview', (event, { visible, deviceId }) => toggleCameraPreview(visible, deviceId));
   ipcMain.on('recorder:memo', () => toggleMemo());
@@ -513,7 +678,24 @@ function registerIpc() {
     return { ...result, cancelled: false };
   });
   ipcMain.on('project:reveal', (event, target) => shell.showItemInFolder(target));
+  ipcMain.handle('clipboard:has-image', async () => {
+    const items = await clipboard.read();
+    return items.some((item) => (item.types || []).some((type) => /^image\//i.test(type)));
+  });
   ipcMain.handle('project:rebuild-index', async (event, file) => media.buildVideoIndex(file));
+  ipcMain.handle('project:import-asset', async (event, { directory, kind, file }) => {
+    if (!['image', 'video', 'clipboard'].includes(kind)) throw new Error('不支持的素材类型');
+    if (kind === 'clipboard') return importAsset({ directory, kind, image: await readClipboardImage(clipboard, nativeImage) }, media, nativeImage);
+    if (!file) {
+      const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+        title: kind === 'video' ? '选择动态背景视频' : '选择图片', properties: ['openFile'],
+        filters: [{ name: kind === 'video' ? '视频' : '图片', extensions: kind === 'video' ? ['mp4', 'mov', 'mkv', 'webm'] : ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+      });
+      if (result.canceled) return null;
+      file = result.filePaths[0];
+    }
+    return importAsset({ directory, kind, file }, media, nativeImage);
+  });
   ipcMain.handle('system:wallpapers', () => listWallpapers());
   ipcMain.handle('dialog:open-image', async (event) => {
     const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), { title: '选择背景图片', properties: ['openFile'], filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'] }] });
@@ -570,6 +752,15 @@ if (!SELF_TEST && !app.requestSingleInstanceLock()) {
     setupTaskbarSafetyHooks(app);
     initShortcuts();
     initTray();
+    app.on('before-quit', (event) => {
+      if (!hasRecordingWork()) return;
+      event.preventDefault();
+      const win = showRecorder();
+      void dialog.showMessageBox(win, {
+        type: 'warning', buttons: ['继续录制'], defaultId: 0, cancelId: 0,
+        message: '当前录制尚未结束', detail: '请先结束或放弃录制，再退出 Recly。',
+      }).catch((error) => console.warn('[DogSC] 显示录制退出提示失败：', error.message || error));
+    });
     if (SELF_TEST) {
       require('./selftest').run({ media, projectsRoot, createWindow, openEditor, showRecorder, showLibrary, toggleMemo, setEnvironment: (value) => { environment = value; } });
       return;
@@ -589,6 +780,9 @@ if (!SELF_TEST && !app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => { if (!SELF_TEST) app.quit(); });
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
+    for (const sessionState of new Set([recording, preparing, startingRecording, finishingRecording].filter(Boolean))) {
+      sessionState.restoreDesktopIcons();
+    }
     restoreTaskbar();
   });
 }

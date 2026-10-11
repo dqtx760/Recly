@@ -8,6 +8,7 @@ const {
   StickerClip,
   evaluateMosaics,
   evaluateStickers,
+  evaluateStickerBackdrop,
   evaluateMotionCurve,
   smootherStep,
   overlayEffectProgress,
@@ -489,6 +490,25 @@ test('evaluateStickers returns required transform fields and respects layerIndex
   assert.equal(t.rotation, 45);
   assert.ok(Number.isFinite(t.opacity));
   assert.ok(Number.isFinite(t.scale));
+});
+
+test('evaluateStickers joins adjacent cuts of the same image without dropping backdrop suppression', () => {
+  const clips = [
+    new StickerClip({
+      id: 'outgoing', relativePath: 'media/card.png', timing: { startTime: 0, duration: 2 },
+      position: { x: 0.3, y: 0.5 }, hidesScreen: true, hidesCamera: true,
+    }),
+    new StickerClip({
+      id: 'incoming', relativePath: 'media/card.png', timing: { startTime: 2, duration: 2 },
+      position: { x: 0.7, y: 0.5 }, hidesScreen: true, hidesCamera: true,
+    }),
+  ];
+  const scenes = evaluateStickers(clips, 2, 1000, 500);
+  assert.equal(scenes.length, 2, '接点两侧的贴图都应参与交接');
+  assert.ok(scenes.every((sticker) => sticker.transitionProgress > 0), '交接时两侧贴图均应可见');
+  const backdrop = evaluateStickerBackdrop(clips, 2, scenes);
+  assert.equal(backdrop.screenSuppression, 1, '相邻片段均隐藏屏幕时，接点不能闪现屏幕');
+  assert.equal(backdrop.cameraSuppression, 1, '相邻片段均隐藏摄像头时，接点不能闪现摄像头');
 });
 
 test('automaticExit maps complementary slide directions and preserves none/fade/pop', () => {

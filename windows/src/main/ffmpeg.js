@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { exportVideoBitrate, EXPORT_AUDIO_BITRATE } = require('../core/model');
+const { resolveAudio } = require('../core/audio');
 
 let binaries = null;
 
@@ -286,10 +287,17 @@ function audioChain(inputIndex, track, segments, sourceDuration, label) {
   const align = track.offset >= 0
     ? `adelay=${Math.round(track.offset * 1000)}:all=1`
     : `atrim=start=${(-track.offset).toFixed(6)},asetpts=PTS-STARTPTS`;
-  filters.push(`[${inputIndex}:a]aresample=48000,${align},apad=whole_dur=${sourceDuration.toFixed(6)},volume=${track.volume.toFixed(4)},asplit=${segments.length}${segments.map((_, i) => `[${aligned}${i}]`).join('')}`);
+  filters.push(`[${inputIndex}:a]aresample=48000,${align},apad=whole_dur=${sourceDuration.toFixed(6)},asplit=${segments.length}${segments.map((_, i) => `[${aligned}${i}]`).join('')}`);
   segments.forEach((segment, i) => {
+    let volume = track.volume ?? 1;
+    if (track.kind) {
+      const volumeKey = `${track.kind}Volume`;
+      const mutedKey = track.kind === 'system' ? 'isSystemMuted' : 'isMicrophoneMuted';
+      const audio = resolveAudio({ [volumeKey]: track.baseVolume ?? track.volume, [mutedKey]: track.baseMuted ?? track.muted ?? false }, segment.audio);
+      volume = audio[mutedKey] ? 0 : audio[volumeKey];
+    }
     const tempo = Math.abs(segment.speed - 1) > 1e-6 ? `,atempo=${segment.speed}` : '';
-    filters.push(`[${aligned}${i}]atrim=start=${segment.sourceStart.toFixed(6)}:end=${segment.sourceEnd.toFixed(6)},asetpts=PTS-STARTPTS${tempo}[${label}s${i}]`);
+    filters.push(`[${aligned}${i}]atrim=start=${segment.sourceStart.toFixed(6)}:end=${segment.sourceEnd.toFixed(6)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(4)}${tempo}[${label}s${i}]`);
   });
   filters.push(`${segments.map((_, i) => `[${label}s${i}]`).join('')}concat=n=${segments.length}:v=0:a=1[${label}]`);
   return filters;

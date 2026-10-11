@@ -5,7 +5,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { ipcRenderer } = require('electron');
-const { canvasDimensions, exportVideoBitrate } = require('../../core/model');
+const { canvasDimensions, exportVideoBitrate, evaluateBackground } = require('../../core/model');
+const { resolveAudio } = require('../../core/audio');
 const { orderedClips } = require('../../core/zoom');
 const { PointerTrack } = require('../../core/pointer');
 const { evaluateScene } = require('../../core/scene');
@@ -40,16 +41,26 @@ function loadPointerTrack(directory, project) {
   }
 }
 
-/// 参与导出的音轨：静音或音量为 0 的轨不进混音。
+/// 参与导出的音轨：只要至少一个主片段解除静音且有音量，就保留该轨。
 function audioTracks(directory, project) {
   const tracks = [];
   const { audio, media } = project;
-  if (media.microphone && !audio.isMicrophoneMuted && audio.microphoneVolume > 0) {
-    tracks.push({ file: path.join(directory, media.microphone.file), offset: media.microphone.offset || 0, volume: audio.microphoneVolume });
-  }
-  if (media.systemAudio && !audio.isSystemMuted && audio.systemVolume > 0) {
-    tracks.push({ file: path.join(directory, media.systemAudio.file), offset: media.systemAudio.offset || 0, volume: audio.systemVolume });
-  }
+  const segments = project.timeline?.segments || [];
+  const include = (kind, mutedKey, volumeKey, source) => {
+    if (!source || !segments.some((segment) => {
+      const resolved = resolveAudio(audio, segment.audio);
+      return !resolved[mutedKey] && resolved[volumeKey] > 0;
+    })) return;
+    tracks.push({
+      kind,
+      file: path.join(directory, source.file),
+      offset: source.offset || 0,
+      baseVolume: audio[volumeKey],
+      baseMuted: audio[mutedKey],
+    });
+  };
+  include('microphone', 'isMicrophoneMuted', 'microphoneVolume', media.microphone);
+  include('system', 'isSystemMuted', 'systemVolume', media.systemAudio);
   return tracks;
 }
 
@@ -89,6 +100,7 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
   const { segments } = project.timeline;
   const source = project.media.screen;
   const camera = project.media.camera && !project.camera.isHidden ? project.media.camera : null;
+  const background = project.canvas.background?.kind === 'video' ? project.canvas.background : null;
   const compositor = new Compositor(directory);
   await compositor.prepare(project);
   const zoomClips = orderedClips(project.zoomAnimations);
@@ -97,6 +109,7 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
   const ctx = canvas.getContext('2d', { alpha: false });
   const screenSource = new FrameSource(path.join(directory, source.file), indexes.screen, hardware);
   const cameraSource = camera ? new FrameSource(path.join(directory, camera.file), indexes.camera, hardware) : null;
+  const backgroundSource = background ? new FrameSource(path.join(directory, background.file), indexes.background, hardware) : null;
   const stream = fs.createWriteStream(rawFile);
   let colorSpace = null;
   let encoderError = null;
@@ -105,6 +118,7 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
   try {
     await screenSource.open();
     if (cameraSource) await cameraSource.open();
+    if (backgroundSource) await backgroundSource.open();
     const config = await chooseEncoderConfig(width, height, frameRate, hardware);
     encoder = new VideoEncoder({
       output: (chunk, metadata) => {
@@ -123,8 +137,14 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
     for (let n = 0; n < totalFrames; n++) {
       checkCancelled();
       if (encoderError) throw encodeFailure();
+      const outputTime = n / frameRate;
       const sourceTime = timeline.locate(segments, n / frameRate).sourceTime;
-      const frames = { screen: await guard(screenSource.frameAt(sourceTime), '解码屏幕画面'), camera: null };
+      const frames = { screen: await guard(screenSource.frameAt(sourceTime), '解码屏幕画面'), camera: null, background: null };
+      if (backgroundSource) {
+        const duration = background.duration || Math.max(backgroundSource.lastTime - backgroundSource.firstTime, 0);
+        const backgroundTime = evaluateBackground(project.canvas, outputTime, { duration }).time;
+        frames.background = await guard(backgroundSource.frameAt(backgroundTime), '解码动态背景');
+      }
       let cameraAspect = null;
       if (cameraSource) {
         const cameraTime = sourceTime - (camera.offset || 0);
@@ -133,7 +153,7 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
           cameraAspect = camera.width / camera.height;
         }
       }
-      const scene = evaluateScene(project, { time: sourceTime, width, height, sourceAspect: source.width / source.height, cameraAspect, zoomClips, pointerTrack });
+      const scene = evaluateScene(project, { time: sourceTime, outputTime, width, height, sourceAspect: source.width / source.height, cameraAspect, zoomClips, pointerTrack });
       compositor.draw(ctx, project, scene, frames);
       if (frameHook) await frameHook(n, canvas, { sourceTime, scene });
 
@@ -159,6 +179,7 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
     stream.destroy();
     screenSource.close();
     if (cameraSource) cameraSource.close();
+    if (backgroundSource) backgroundSource.close();
   }
 }
 
@@ -196,6 +217,7 @@ async function exportProject({ project, directory, outputFile, kind = 'video', r
   const indexes = {
     screen: await loadVideoIndex(directory, project.media.screen),
     camera: camera ? await loadVideoIndex(directory, camera) : null,
+    background: project.canvas.background?.kind === 'video' ? await loadVideoIndex(directory, project.canvas.background) : null,
   };
   const job = { project, directory, rawFile, width, height, frameRate, totalFrames, onProgress, checkCancelled, frameHook, indexes };
   try {

@@ -53,10 +53,11 @@ function makeCameraMotionClip(options = {}) {
   let layout = targetOpt.layout ?? 'shape';
   let shape = targetOpt.shape;
   if (typeof layout === 'object' && layout !== null) {
-    if (layout.kind === 'shape') {
+    const layoutValue = layout;
+    if (layoutValue.kind === 'shape') {
       layout = 'shape';
-      shape = shape || layout.shape;
-    } else if (layout.kind === 'fullscreen') {
+      shape = shape || layoutValue.shape;
+    } else if (layoutValue.kind === 'fullscreen') {
       layout = 'fullscreen';
     }
   }
@@ -106,10 +107,11 @@ function resolveCameraState(state = {}, cameraAspectRatio = 16 / 9, canvasAspect
   let layout = state.layout || 'shape';
   let shape = state.shape;
   if (typeof layout === 'object' && layout !== null) {
-    if (layout.kind === 'shape') {
+    const layoutValue = layout;
+    if (layoutValue.kind === 'shape') {
       layout = 'shape';
-      shape = shape || layout.shape;
-    } else if (layout.kind === 'fullscreen') {
+      shape = shape || layoutValue.shape;
+    } else if (layoutValue.kind === 'fullscreen') {
       layout = 'fullscreen';
     }
   }
@@ -210,7 +212,7 @@ function normalizeClips(clips) {
   return clips
     .map((c) => (c instanceof CameraMotionClip ? c : makeCameraMotionClip(c)))
     .filter((c) => Number.isFinite(c.timing.startTime) && Number.isFinite(c.timing.duration) && c.timing.duration > 0)
-    .sort((a, b) => (a.timing.startTime === b.timing.startTime ? (a.id < b.id ? -1 : 1) : a.timing.startTime - b.timing.startTime));
+    .sort((a, b) => (a.timing.startTime - b.timing.startTime) || String(a.id).localeCompare(String(b.id)));
 }
 
 function touchesNextClip(clips, index) {

@@ -553,6 +553,91 @@ class StickerClip {
   }
 }
 
+function stickerTransitionDurations(clip) {
+  const enter = Math.max(clip.enterDuration ?? 0.7, 0);
+  const exit = Math.max(clip.exitDuration ?? 0.22, 0);
+  const duration = clip.timing?.duration ?? clip.duration ?? 0;
+  const scale = enter + exit > duration && enter + exit > 0 ? duration / (enter + exit) : 1;
+  const enterPreset = clip.animation ?? 'pop';
+  const exitPreset = clip.exitAnimation ?? automaticExit(enterPreset);
+  return {
+    enter: enter * scale,
+    exit: exit * scale,
+    joinEnter: enterPreset === 'none' ? 0 : enter * scale,
+    joinExit: exitPreset === 'none' ? 0 : exit * scale,
+  };
+}
+
+/// 同层、同一图片在接点处相邻时，把离场和入场窗口接成一次交接。
+function stickerJoins(clips) {
+  const ordered = clips.map((clip, index) => ({ clip, index }))
+    .sort((a, b) => (a.clip.layerIndex ?? 0) - (b.clip.layerIndex ?? 0)
+      || ((a.clip.timing?.startTime ?? a.clip.startTime ?? 0) - (b.clip.timing?.startTime ?? b.clip.startTime ?? 0)));
+  const joins = [];
+  for (let i = 0; i + 1 < ordered.length; i++) {
+    const outgoing = ordered[i];
+    const incoming = ordered[i + 1];
+    if ((outgoing.clip.layerIndex ?? 0) !== (incoming.clip.layerIndex ?? 0)
+      || !outgoing.clip.relativePath
+      || outgoing.clip.relativePath !== incoming.clip.relativePath) continue;
+    const start = outgoing.clip.timing?.startTime ?? outgoing.clip.startTime ?? 0;
+    const outDuration = outgoing.clip.timing?.duration ?? outgoing.clip.duration ?? 0;
+    const nextStart = incoming.clip.timing?.startTime ?? incoming.clip.startTime ?? 0;
+    if (Math.abs(start + outDuration - nextStart) > 1e-7) continue;
+    const from = stickerTransitionDurations(outgoing.clip);
+    const to = stickerTransitionDurations(incoming.clip);
+    const before = Math.min(from.joinExit, from.exit);
+    const after = Math.min(to.joinEnter, to.enter);
+    if (before + after <= 0.0001) continue;
+    joins.push({
+      outgoingIndex: outgoing.index,
+      incomingIndex: incoming.index,
+      start: start + outDuration - before,
+      end: nextStart + after,
+      curve: incoming.clip.animationCurve ?? 'swift',
+    });
+  }
+  return joins;
+}
+
+function stickerBackdropTreatment(clip, visibility = 1) {
+  const hidesScreen = Boolean(clip.hidesScreen);
+  return {
+    screenSuppression: hidesScreen ? visibility : 0,
+    cameraSuppression: clip.hidesCamera ? visibility : 0,
+    screenBlur: hidesScreen ? 0 : Math.max(clip.backdropBlur ?? 20, 0) * visibility,
+    cameraBlur: clip.backdropBlurIncludesCamera ? Math.max(clip.backdropBlur ?? 20, 0) * visibility : 0,
+  };
+}
+
+function evaluateStickerBackdrop(clips = [], time = 0, activeStickers = []) {
+  const result = { screenSuppression: 0, cameraSuppression: 0, screenBlur: 0, cameraBlur: 0 };
+  const joined = new Set();
+  const maxInto = (target, value) => {
+    for (const key of Object.keys(target)) target[key] = Math.max(target[key], value[key]);
+  };
+  const joins = stickerJoins(Array.isArray(clips) ? clips : []);
+  for (const join of joins) {
+    if (time < join.start || time >= join.end) continue;
+    const outgoing = clips[join.outgoingIndex];
+    const incoming = clips[join.incomingIndex];
+    const progress = evaluateMotionCurve((time - join.start) / (join.end - join.start), join.curve);
+    const from = stickerBackdropTreatment(outgoing);
+    const to = stickerBackdropTreatment(incoming);
+    const bridge = {};
+    for (const key of Object.keys(result)) bridge[key] = from[key] + (to[key] - from[key]) * progress;
+    maxInto(result, bridge);
+    joined.add(join.outgoingIndex);
+    joined.add(join.incomingIndex);
+  }
+  for (const sticker of activeStickers) {
+    const index = clips.findIndex((clip) => clip.id === sticker.id);
+    if (index >= 0 && joined.has(index)) continue;
+    maxInto(result, stickerBackdropTreatment(sticker.clip || sticker, sticker.transitionProgress ?? 1));
+  }
+  return result;
+}
+
 /**
  * 评估所有贴图片段在指定时间下的变换及渲染属性 (移植自 FrameScene.swift stickerScenes)
  *
@@ -576,8 +661,12 @@ function evaluateStickers(
   const ch = Number.isFinite(canvasHeight) && canvasHeight > 0 ? canvasHeight : 1080;
 
   const active = [];
+  const joins = stickerJoins(stickerClips);
+  const entryJoins = new Map(joins.map((join) => [join.incomingIndex, join]));
+  const exitJoins = new Map(joins.map((join) => [join.outgoingIndex, join]));
 
-  for (const rawClip of stickerClips) {
+  for (let clipIndex = 0; clipIndex < stickerClips.length; clipIndex++) {
+    const rawClip = stickerClips[clipIndex];
     const startTime = rawClip.timing?.startTime ?? rawClip.startTime ?? 0;
     const duration = rawClip.timing?.duration ?? rawClip.duration ?? 0;
     const endTime = rawClip.timing?.endTime ?? startTime + duration;
@@ -586,7 +675,11 @@ function evaluateStickers(
       continue;
     }
 
-    if (time < startTime || time >= endTime) {
+    const entryJoin = entryJoins.get(clipIndex);
+    const exitJoin = exitJoins.get(clipIndex);
+    const entryJoined = entryJoin && time >= entryJoin.start && time < entryJoin.end;
+    const exitJoined = exitJoin && time >= exitJoin.start && time < exitJoin.end;
+    if ((time < startTime || time >= endTime) && !entryJoined && !exitJoined) {
       continue;
     }
 
@@ -605,14 +698,25 @@ function evaluateStickers(
     const remaining = Math.max(endTime - time, 0);
 
     const suppressesEntry =
-      Boolean(options.suppressesInitialEntry) && startTime <= 0.0001;
-    const linearEnter = suppressesEntry
+      Boolean(options.suppressesInitialEntry)
+      && startTime <= (options.initialSourceTime ?? 0) + 0.0001
+      && endTime > (options.initialSourceTime ?? 0) + 0.0001;
+    const entryJoinProgress = entryJoined
+      ? evaluateMotionCurve((time - entryJoin.start) / (entryJoin.end - entryJoin.start), entryJoin.curve)
+      : null;
+    const exitJoinProgress = exitJoined
+      ? evaluateMotionCurve((time - exitJoin.start) / (exitJoin.end - exitJoin.start), exitJoin.curve)
+      : null;
+    const linearEnter = entryJoinProgress !== null
+      ? entryJoinProgress
+      : suppressesEntry
       ? 1
       : enterDuration > 0
       ? Math.min(localTime / enterDuration, 1)
       : 1;
-    const linearExit =
-      exitDuration > 0 ? Math.min(remaining / exitDuration, 1) : 1;
+    const linearExit = exitJoinProgress !== null
+      ? 1 - exitJoinProgress
+      : exitDuration > 0 ? Math.min(remaining / exitDuration, 1) : 1;
 
     const curve = rawClip.animationCurve ?? 'swift';
     const enterProgress = evaluateMotionCurve(linearEnter, curve);
@@ -621,7 +725,7 @@ function evaluateStickers(
     const enterPreset = rawClip.animation ?? 'pop';
     const exitPreset = rawClip.exitAnimation ?? automaticExit(enterPreset);
 
-    const isExiting = exitDuration > 0 && remaining < exitDuration;
+    const isExiting = exitJoined || (exitDuration > 0 && remaining < exitDuration);
     const activePreset = isExiting ? exitPreset : enterPreset;
     const activeProgress = isExiting ? exitProgress : enterProgress;
 
@@ -720,6 +824,7 @@ module.exports = {
   StickerClip,
   evaluateMosaics,
   evaluateStickers,
+  evaluateStickerBackdrop,
   evaluateMotionCurve,
   smootherStep,
   overlayEffectProgress,

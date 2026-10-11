@@ -66,6 +66,15 @@ function defaultCanvas() {
     shadowStrength: 0.28,
     patternScale: 1,
     patternOpacity: 1,
+    patternMotion: 0,
+    crop: { x: 0, y: 0, width: 1, height: 1 },
+    screenFrame: 'none',
+    screenFrameScale: 1,
+    screenFrameToolbarScale: 1,
+    screenFrameOuterCornerRadius: null,
+    screenFrameContentCornerRadius: null,
+    screenFrameTitle: '',
+    screenFrameBrowserAddress: '',
   };
 }
 
@@ -80,6 +89,8 @@ function defaultCamera() {
     isMirrored: true,
     isHidden: false,
     scaleDuringZoom: 0.7,
+    contentScale: 1,
+    contentPosition: { x: 0.5, y: 0.5 },
   };
 }
 
@@ -130,8 +141,10 @@ function makeProject({ name, media, capture }) {
     cursorStyle: defaultCursorStyle(),
     motion: defaultMotion(),
     audio: defaultAudio(),
+    openingSequence: defaultOpeningSequence(),
+    previewQuality: 'balanced',
     zoomAnimations: [],
-    timeline: { segments: [{ id: randomUUID(), sourceStart: 0, sourceEnd: duration, speed: 1 }] },
+    timeline: { segments: [{ id: randomUUID(), sourceStart: 0, sourceEnd: duration, speed: 1 }], screenMotionClips: [], cameraMotionClips: [], mosaicClips: [], stickerClips: [] },
     markers: [],
     export: { kind: 'video', resolution: 'source', frameRate: 60 },
   };
@@ -148,6 +161,10 @@ function normalizeBackground(bg) {
         kind: 'video',
         file: typeof bg.file === 'string' ? bg.file : '',
         isLooping: bg.isLooping !== false,
+        ...(bg.duration !== undefined ? { duration: bg.duration } : {}),
+        ...(bg.width !== undefined ? { width: bg.width } : {}),
+        ...(bg.height !== undefined ? { height: bg.height } : {}),
+        ...(bg.index !== undefined ? { index: bg.index } : {}),
       };
     case 'image':
       return {
@@ -263,13 +280,23 @@ function normalizeProject(project) {
   project.cursorStyle = merge(defaultCursorStyle(), project.cursorStyle);
   project.motion = merge(defaultMotion(), project.motion);
   project.audio = merge(defaultAudio(), project.audio);
+  project.openingSequence = merge(defaultOpeningSequence(), project.openingSequence);
+  project.previewQuality = project.previewQuality === 'full' ? 'full' : 'balanced';
   project.zoomAnimations = project.zoomAnimations || [];
   project.markers = project.markers || [];
   project.export = merge({ kind: 'video', resolution: 'source', frameRate: 60 }, project.export);
   if (!project.timeline || !project.timeline.segments || !project.timeline.segments.length) {
     project.timeline = { segments: [{ id: randomUUID(), sourceStart: 0, sourceEnd: project.media.screen.duration, speed: 1 }] };
   }
+  for (const key of ['screenMotionClips', 'cameraMotionClips', 'mosaicClips', 'stickerClips']) {
+    if (!Array.isArray(project.timeline[key])) project.timeline[key] = [];
+  }
   return project;
+}
+
+function defaultOpeningSequence() {
+  return { isEnabled: false, preset: 'sideSlide', motionCurve: 'swift', duration: 2.2, stagger: 0.16,
+    includedElements: ['screen', 'camera', 'stickers'], elementOrder: ['screen', 'camera', 'stickers'] };
 }
 
 function fixedAspectRatio(canvas) {
@@ -321,6 +348,7 @@ module.exports = {
   clamp, even, uid: randomUUID,
   ASPECT_RATIOS, RESOLUTIONS, PATTERN_PRESETS, CAMERA_SHAPES, CLICK_EFFECTS, ZOOM_EASINGS,
   defaultCanvas, defaultCamera, defaultCursorStyle, defaultMotion, defaultAudio,
+  defaultOpeningSequence,
   normalizeBackground, isValidBackground, evaluateBackground,
   makeProject, normalizeProject, canvasDimensions, exportVideoBitrate, EXPORT_AUDIO_BITRATE,
 };

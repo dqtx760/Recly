@@ -6,6 +6,7 @@ const path = require('node:path');
 const { screen } = require('electron');
 const media = require('./ffmpeg');
 const { PointerRecorder, toSourceTimeline, windowRects, bringToFront } = require('./pointer-recorder');
+const { createDesktopIconsController } = require('./win32');
 const { makeProject, uid } = require('../core/model');
 const { planAutoZoom } = require('../core/zoom');
 const { isInside } = require('../core/pointer');
@@ -85,9 +86,11 @@ function resolveSource(selection) {
 }
 
 class RecordingSession {
-  constructor({ projectsRoot, selection, frameRate = 60, name }) {
+  constructor({ projectsRoot, selection, frameRate = 60, name, hideDesktopIconsDuringRecording = false, desktopIcons = createDesktopIconsController() }) {
     this.selection = selection;
     this.frameRate = frameRate;
+    this.hideDesktopIconsDuringRecording = hideDesktopIconsDuringRecording;
+    this.desktopIcons = desktopIcons;
     this.name = name || defaultProjectName();
     this.directory = uniqueProjectDirectory(projectsRoot, this.name);
     this.mediaDirectory = path.join(this.directory, 'media');
@@ -96,11 +99,16 @@ class RecordingSession {
   }
 
   async start() {
-    fs.mkdirSync(this.mediaDirectory, { recursive: true });
-    this.source = resolveSource(this.selection);
-    this.pointer = new PointerRecorder(this.source.getRect);
-    this.pointer.start();
     try {
+      fs.mkdirSync(this.mediaDirectory, { recursive: true });
+      this.source = resolveSource(this.selection);
+      if (this.hideDesktopIconsDuringRecording && this.selection.kind !== 'window') {
+        try { this.desktopIcons.hide(); } catch (error) {
+          console.warn('[DogSC] 隐藏桌面图标失败：', error.message || error);
+        }
+      }
+      this.pointer = new PointerRecorder(this.source.getRect);
+      this.pointer.start();
       this.capture = await media.startCapture({
         source: this.source.capture,
         fps: this.frameRate,
@@ -113,7 +121,9 @@ class RecordingSession {
         new Promise((_, reject) => setTimeout(() => reject(new Error('屏幕采集启动超时')), 10000)),
       ]);
     } catch (error) {
-      await this.discard();
+      try { await this.discard(); } catch (cleanupError) {
+        console.warn('[DogSC] 录制启动失败后的清理未完成：', cleanupError.message || cleanupError);
+      }
       throw error;
     }
     return { directory: this.directory, mediaDirectory: this.mediaDirectory, firstFrameTime: this.firstFrameTime, encoder: this.capture.encoder.label };
@@ -127,17 +137,38 @@ class RecordingSession {
   }
 
   async discard() {
-    if (this.pointer) this.pointer.stop();
-    if (this.capture) await this.capture.stop();
-    fs.rmSync(this.directory, { recursive: true, force: true });
+    let stopError = null;
+    try {
+      if (this.pointer) this.pointer.stop();
+      if (this.capture) await this.capture.stop();
+    } catch (error) {
+      stopError = error;
+    } finally {
+      this.restoreDesktopIcons();
+      fs.rmSync(this.directory, { recursive: true, force: true });
+    }
+    if (stopError) throw stopError;
+  }
+
+  restoreDesktopIcons() {
+    try {
+      return this.desktopIcons.restore();
+    } catch (error) {
+      console.warn('[DogSC] 恢复桌面图标状态失败：', error.message || error);
+      return false;
+    }
   }
 
   /// tracks：录制条窗口用 MediaRecorder 写下的附加轨，
   /// [{ kind: 'camera' | 'microphone' | 'system', file, startedAt（系统时钟秒）, hasAudio }]
   async finish(tracks, onStage = () => {}) {
-    onStage('正在结束采集');
-    const pointerEvents = this.pointer.stop();
-    await this.capture.stop();
+    let pointerEvents;
+    try {
+      onStage('正在结束采集');
+      pointerEvents = this.pointer.stop();
+    } finally {
+      try { await this.capture.stop(); } finally { this.restoreDesktopIcons(); }
+    }
     const inMedia = (name) => path.join(this.mediaDirectory, name);
     const raw = inMedia('screen.mkv');
 

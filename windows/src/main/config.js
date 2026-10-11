@@ -141,6 +141,20 @@ function setProjectsRoot(dir) {
   return resolved;
 }
 
+function getHideDesktopIconsDuringRecording() {
+  return loadConfig().hideDesktopIconsDuringRecording === true;
+}
+
+function setHideDesktopIconsDuringRecording(enabled) {
+  if (typeof enabled !== 'boolean') {
+    throw new Error('Invalid desktop icon visibility setting');
+  }
+  const config = loadConfig();
+  config.hideDesktopIconsDuringRecording = enabled;
+  saveConfig(config);
+  return enabled;
+}
+
 /**
  * 注册项目配置相关的 IPC 处理函数
  */
@@ -156,6 +170,9 @@ function registerConfigIpc(ipc = (electron && electron.ipcMain), dialogInstance 
   ipc.handle('config:set-projects-root', (event, dir) => {
     return setProjectsRoot(dir);
   });
+
+  ipc.handle('config:get-hide-desktop-icons', () => getHideDesktopIconsDuringRecording());
+  ipc.handle('config:set-hide-desktop-icons', (event, enabled) => setHideDesktopIconsDuringRecording(enabled));
 
   ipc.handle('config:choose-projects-root', async (event) => {
     if (!dialogInstance || typeof dialogInstance.showOpenDialog !== 'function') {
@@ -188,6 +205,8 @@ function registerConfigIpc(ipc = (electron && electron.ipcMain), dialogInstance 
 module.exports = {
   getProjectsRoot,
   setProjectsRoot,
+  getHideDesktopIconsDuringRecording,
+  setHideDesktopIconsDuringRecording,
   registerConfigIpc,
   getConfigPath,
   setConfigPath,

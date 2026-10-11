@@ -4,10 +4,11 @@
 
 const { clamp, CAMERA_SHAPES } = require('./model');
 const { sampleZoom, viewportTransform, activeClipIndex, adjacentPreviousClip } = require('./zoom');
-const { NormalizedCrop, screenDecoration } = require('./crop-frame');
+const { NormalizedCrop, decorationInsets, screenDecoration } = require('./crop-frame');
 const { ScreenProjection } = require('./projection');
-const { openingSample, evaluateMosaics, evaluateStickers } = require('./opening-overlay');
+const { openingSample, evaluateMosaics, evaluateStickers, evaluateStickerBackdrop } = require('./opening-overlay');
 const { evaluateCameraMotion, resolveCameraState } = require('./camera-motion');
+const { evaluateScreenMotionLayout } = require('./screen-motion');
 const CURSOR_CANONICAL_HEIGHT = 44;
 const CANONICAL_SHORT_EDGE = 1080;
 
@@ -22,7 +23,7 @@ function aspectFit(aspectRatio, width, height) {
     : { width, height: width / aspect };
 }
 
-function evaluateScreen(project, time, width, height, sourceAspect, zoomClips, pointerTrack) {
+function evaluateScreen(project, time, width, height, sourceAspect, zoomClips, pointerTrack, screenMotionClips, motionStyle) {
   const canvas = project.canvas || {};
   const scale = canonicalStyleScale(width, height);
   const padding = clamp((canvas.padding ?? 100) * scale, 0, Math.min(width, height) * 0.42);
@@ -34,14 +35,50 @@ function evaluateScreen(project, time, width, height, sourceAspect, zoomClips, p
   const fitted = aspectFit(croppedAspect, Math.max(width - padding * 2, 2), Math.max(height - padding * 2, 2));
   const fittedRect = { x: (width - fitted.width) / 2, y: (height - fitted.height) / 2, width: fitted.width, height: fitted.height };
 
-  const manualScale = clamp(canvas.contentScale ?? 1, 0.2, 4);
+  const borderWidthAtScaleOne = clamp(canvas.borderWidth ?? 0, 0, 60) * scale;
+  const insetsAtScaleOne = decorationInsets({
+    style: canvas.screenFrame || 'none',
+    frameScale: canvas.screenFrameScale,
+    toolbarScale: canvas.screenFrameToolbarScale,
+    fittedWidth: fittedRect.width,
+    fittedHeight: fittedRect.height,
+    styleScale: scale,
+  });
+  const screenMotionSample = evaluateScreenMotionLayout(
+    screenMotionClips,
+    time,
+    {
+      position: canvas.contentPosition,
+      scale: canvas.contentScale,
+      rotationX: canvas.rotationX,
+      rotationY: canvas.rotationY,
+      rotationZ: canvas.rotationZ,
+      perspective: canvas.perspective,
+    },
+    motionStyle,
+    {
+      canvasWidth: width,
+      canvasHeight: height,
+      fittedWidth: fittedRect.width,
+      fittedHeight: fittedRect.height,
+      borderWidthAtScaleOne,
+      decorationTopAtScaleOne: insetsAtScaleOne.top,
+      decorationRightAtScaleOne: insetsAtScaleOne.right,
+      decorationBottomAtScaleOne: insetsAtScaleOne.bottom,
+      decorationLeftAtScaleOne: insetsAtScaleOne.left,
+    }
+  );
+  const screenMotion = screenMotionSample.state;
+  const manualScale = clamp(screenMotion.scale, 0.2, 4);
   const baseBorderWidth = clamp(canvas.borderWidth ?? 0, 0, 60) * scale * manualScale;
   const scaledWidth = fittedRect.width * manualScale;
   const scaledHeight = fittedRect.height * manualScale;
-  const contentPos = canvas.contentPosition || { x: 0.5, y: 0.5 };
+  const contentPos = screenMotion.position || canvas.contentPosition || { x: 0.5, y: 0.5 };
   // 定位的是带外描边的完整卡片：贴边时描边仍留在画布内。
-  const offsetX = (contentPos.x - 0.5) * (width - (scaledWidth + baseBorderWidth * 2));
-  const offsetY = (contentPos.y - 0.5) * (height - (scaledHeight + baseBorderWidth * 2));
+  const offsetX = screenMotionSample.manualOffset?.x
+    ?? (contentPos.x - 0.5) * (width - (scaledWidth + baseBorderWidth * 2));
+  const offsetY = screenMotionSample.manualOffset?.y
+    ?? (contentPos.y - 0.5) * (height - (scaledHeight + baseBorderWidth * 2));
   const baseRect = {
     x: fittedRect.x + fittedRect.width / 2 - scaledWidth / 2 + offsetX,
     y: fittedRect.y + fittedRect.height / 2 - scaledHeight / 2 + offsetY,
@@ -63,24 +100,34 @@ function evaluateScreen(project, time, width, height, sourceAspect, zoomClips, p
   const zoom = sampleZoom(zoomClips, sampleTime, project.motion, automaticFocus, inheritedAutomaticFocus);
   // 素材已铺满画布时在该视口内缩放，不露出画布边缘。
   const tolerance = Math.max(width, height) * 1e-9;
-  const keepsCanvasCovered = baseRect.x <= tolerance && baseRect.y <= tolerance
+  const keepsCanvasCovered = (canvas.screenFrame || 'none') === 'none'
+    && !screenMotionSample.isActive
+    && baseRect.x <= tolerance && baseRect.y <= tolerance
     && baseRect.x + baseRect.width >= width - tolerance
     && baseRect.y + baseRect.height >= height - tolerance;
   const visibleRect = keepsCanvasCovered
     ? { x: -baseRect.x / baseRect.width, y: -baseRect.y / baseRect.height, width: width / baseRect.width, height: height / baseRect.height }
     : null;
   const viewport = viewportTransform(zoom, visibleRect);
+  const decorationGrowth = manualScale * (viewport.scale - 1) / 2;
   const finalRect = {
-    x: baseRect.x + baseRect.width / 2 - baseRect.width * viewport.scale / 2 + viewport.translation.x * baseRect.width,
-    y: baseRect.y + baseRect.height / 2 - baseRect.height * viewport.scale / 2 + viewport.translation.y * baseRect.height,
+    x: baseRect.x + baseRect.width / 2 - baseRect.width * viewport.scale / 2
+      + viewport.translation.x * baseRect.width
+      + (insetsAtScaleOne.left - insetsAtScaleOne.right) * decorationGrowth,
+    y: baseRect.y + baseRect.height / 2 - baseRect.height * viewport.scale / 2
+      + viewport.translation.y * baseRect.height
+      + (insetsAtScaleOne.top - insetsAtScaleOne.bottom) * decorationGrowth,
     width: baseRect.width * viewport.scale,
     height: baseRect.height * viewport.scale,
   };
   const magnification = scale * manualScale * viewport.scale;
   return {
     crop,
+    screenMotion,
+    projectionAnchor: screenMotionSample.projectionAnchor,
     fittedRect,
     baseRect,
+    manualOffset: { x: offsetX, y: offsetY },
     finalRect,
     zoom,
     viewport,
@@ -162,6 +209,11 @@ function evaluateCamera(style, cameraAspect, screenZoomScale, width, height, cam
         }
       : null,
     isMirrored: Boolean(style.isMirrored),
+    contentScale: clamp(style.contentScale ?? 1, 1, 4),
+    contentPosition: {
+      x: clamp(style.contentPosition?.x ?? 0.5, 0, 1),
+      y: clamp(style.contentPosition?.y ?? 0.5, 0, 1),
+    },
     opacity: clamp(sample.opacity ?? 1, 0, 1) * openingOpacity,
     fullscreenProgress,
   };
@@ -221,12 +273,16 @@ function evaluateCursor(project, time, screen, width, height, pointerTrack) {
   const sample = pointerTrack.evaluation(time + (style.timeOffset || 0), project.motion, style).cursor;
   if (!sample) return null;
   const { x, y } = sample.location;
-  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  const crop = screen.crop || { x: 0, y: 0, width: 1, height: 1 };
+  if (x < crop.x || x > crop.x + crop.width || y < crop.y || y > crop.y + crop.height) return null;
+  const localX = (x - crop.x) / crop.width;
+  const localY = (y - crop.y) / crop.height;
   const shortEdge = Math.min(width, height);
   // 光标大小只跟画布短边走，不随屏幕缩放放大。
   const referenceHeight = Math.max(shortEdge * CURSOR_CANONICAL_HEIGHT / CANONICAL_SHORT_EDGE * clamp(style.size, 0.25, 6), 1);
-  let curX = screen.finalRect.x + x * screen.finalRect.width;
-  let curY = screen.finalRect.y + y * screen.finalRect.height;
+  // finalRect 已经包含屏幕 zoom 的缩放和平移，所以这里只把源点映射到裁切后的归一化空间。
+  let curX = screen.finalRect.x + localX * screen.finalRect.width;
+  let curY = screen.finalRect.y + localY * screen.finalRect.height;
   if (screen.projectedQuad && (screen.rotationX || screen.rotationY || screen.rotationZ)) {
     const projectedPoint = screen.projectedQuad.project({ x: curX, y: curY }, screen.finalRect);
     if (projectedPoint && Number.isFinite(projectedPoint.x) && Number.isFinite(projectedPoint.y)) {
@@ -261,18 +317,31 @@ function evaluateScene(project, options = {}) {
   const w = Math.max(width, 2);
   const h = Math.max(height, 2);
   const sampleTime = Math.max(time, 0);
+  const outputTime = Number.isFinite(options.outputTime) ? Math.max(options.outputTime, 0) : sampleTime;
   const styleScale = canonicalStyleScale(w, h);
 
   // 1. 评估屏幕卡片基础几何与裁切
-  const screen = evaluateScreen(project, sampleTime, w, h, sourceAspect, zoomClips, pointerTrack);
+  const screen = evaluateScreen(
+    project,
+    sampleTime,
+    w,
+    h,
+    sourceAspect,
+    zoomClips,
+    pointerTrack,
+    options.screenMotionClips || project.timeline?.screenMotionClips,
+    project.motion
+  );
+  const screenMotion = screen.screenMotion;
 
   // 2. 开场序列
   const openingSeq = project.openingSequence;
+  const openingSourceTime = project.timeline?.segments?.[0]?.sourceStart ?? 0;
   const hasOpeningSticker = Boolean(
     (options.stickerClips || project.timeline?.stickerClips)?.some(clip => {
       const start = clip.timing?.startTime ?? clip.startTime ?? 0;
       const end = clip.timing?.endTime ?? (start + (clip.timing?.duration ?? clip.duration ?? 0));
-      return start <= 0.0001 && end > 0.0001;
+      return start <= openingSourceTime + 0.0001 && end > openingSourceTime + 0.0001;
     })
   );
   const hasOpeningCamera = Boolean(
@@ -292,7 +361,7 @@ function evaluateScene(project, options = {}) {
     'screen',
     openingSeq,
     availableOpeningElements,
-    sampleTime,
+    outputTime,
     w,
     h
   );
@@ -322,19 +391,15 @@ function evaluateScene(project, options = {}) {
   });
 
   // 4. 3D 屏幕投影几何
-  const baseRotationX = project.canvas?.rotationX ?? 0;
-  const baseRotationY = project.canvas?.rotationY ?? 0;
-  const baseRotationZ = project.canvas?.rotationZ ?? 0;
-  const basePerspective = project.canvas?.perspective ?? 0;
-  const rotationX = baseRotationX + (screenOpening?.rotationX || 0);
-  const rotationY = baseRotationY + (screenOpening?.rotationY || 0);
-  const rotationZ = baseRotationZ;
-  const perspective = Math.min(Math.max(basePerspective + (screenOpening?.perspective || 0), 0), 2);
+  const rotationX = clamp(screenMotion.rotationX, -89, 89) + (screenOpening?.rotationX || 0);
+  const rotationY = clamp(screenMotion.rotationY, -89, 89) + (screenOpening?.rotationY || 0);
+  const rotationZ = screenMotion.rotationZ;
+  const perspective = Math.min(Math.max(screenMotion.perspective + (screenOpening?.perspective || 0), 0), 2);
 
   const projectionRect = (decoration && decoration.outerRect && decoration.style !== 'none')
     ? decoration.outerRect
     : screen.finalRect;
-  const anchorNorm = project.canvas?.projectionAnchor || { x: 0.5, y: 0.5 };
+  const anchorNorm = screen.projectionAnchor || screenMotion.position;
   const projectionAnchor = {
     x: screen.finalRect.x + screen.finalRect.width * (anchorNorm.x ?? 0.5),
     y: screen.finalRect.y + screen.finalRect.height * (anchorNorm.y ?? 0.5),
@@ -367,7 +432,7 @@ function evaluateScene(project, options = {}) {
     'camera',
     openingSeq,
     availableOpeningElements,
-    sampleTime,
+    outputTime,
     w,
     h
   );
@@ -398,7 +463,7 @@ function evaluateScene(project, options = {}) {
     'stickers',
     openingSeq,
     availableOpeningElements,
-    sampleTime,
+    outputTime,
     w,
     h
   );
@@ -407,6 +472,7 @@ function evaluateScene(project, options = {}) {
   );
   let stickers = evaluateStickers(rawStickerClips, sampleTime, w, h, {
     suppressesInitialEntry,
+    initialSourceTime: openingSourceTime,
   });
   if (stickerOpening && (stickerOpening.scale !== 1 || (stickerOpening.offset && (stickerOpening.offset.x !== 0 || stickerOpening.offset.y !== 0)) || stickerOpening.opacity !== 1)) {
     stickers = stickers.map(item => {
@@ -424,6 +490,7 @@ function evaluateScene(project, options = {}) {
       return updated;
     });
   }
+  const stickerBackdrop = evaluateStickerBackdrop(rawStickerClips, sampleTime, stickers);
 
   // 8. 光标评估
   const cursor = evaluateCursor(project, sampleTime, screen, w, h, pointerTrack);
@@ -439,6 +506,8 @@ function evaluateScene(project, options = {}) {
     width: w,
     height: h,
     styleScale,
+    outputTime,
+    screenMotion,
     screen,
     camera,
     cursor,
@@ -447,6 +516,7 @@ function evaluateScene(project, options = {}) {
     projectedQuad,
     mosaics,
     stickers,
+    stickerBackdrop,
     opening,
   };
 }
