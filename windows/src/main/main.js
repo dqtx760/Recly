@@ -4,8 +4,11 @@
 const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShortcut, session, shell, Menu, Tray, clipboard, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const media = require('./ffmpeg');
+const { createAgentService } = require('./agent-service');
+const { TranscriptionManager } = require('./transcription');
 const { RecordingSession, listDisplays, PROJECT_EXTENSION } = require('./recording');
 const { copyProjectToFolder } = require('./project-copy');
 const { normalizeProject } = require('../core/model');
@@ -13,6 +16,7 @@ const { normalizeProject } = require('../core/model');
 const { registerPresetsIpc } = require('./presets');
 const { registerUpdaterIpc } = require('./updater');
 const { getProjectsRoot, getHideDesktopIconsDuringRecording, registerConfigIpc } = require('./config');
+const { automaticExportPath } = require('./export-path');
 const { trashProjects } = require('./project-trash');
 const { importAsset, readClipboardImage } = require('./asset-import');
 const {
@@ -85,6 +89,10 @@ let startingRecording = null;
 let finishingRecording = null;
 let environment = { ok: false, reason: '正在检查 ffmpeg…' };
 let activeExport = null;
+let activeExportSession = null;
+let agentService = null;
+let transcription = null;
+let drainingServices = false;
 
 function hasRecordingWork() {
   return Boolean(recording || preparing || startingRecording || finishingRecording);
@@ -223,15 +231,111 @@ function openEditor(directory) {
     return existing;
   }
   const win = createWindow('editor.html', { width: 1480, height: 940, minWidth: 1100, minHeight: 700, frame: false, title: `${path.basename(directory, PROJECT_EXTENSION)} — Recly` }, { project: directory });
+  const editorSender = win.webContents;
+  editorSender.once('destroyed', () => {
+    if (activeExportSession?.sender !== editorSender) return;
+    activeExportSession = null;
+    // Keep the encoder lock until its process has actually stopped.
+    if (activeExport) activeExport.kill();
+  });
   win.once('ready-to-show', () => { win.maximize(); win.show(); });
   win.on('closed', () => {
     editorWindows.delete(directory);
+    if (agentService) agentService.rendererClosed(directory);
     if (editorWindows.size === 0 && recorderWindow && !recorderWindow.isDestroyed()) {
       recorderWindow.show();
     }
   });
   editorWindows.set(directory, win);
   return win;
+}
+
+function getEditorWindow(directory) {
+  const expected = path.resolve(directory).toLowerCase();
+  for (const [projectDirectory, win] of editorWindows) {
+    if (path.resolve(projectDirectory).toLowerCase() === expected && !win.isDestroyed()) return win;
+  }
+  return null;
+}
+
+function editorDirectoryForSender(sender) {
+  for (const [directory, win] of editorWindows) {
+    if (!win.isDestroyed() && win.webContents === sender) return directory;
+  }
+  return null;
+}
+
+function requireEditorRequest(event, directory) {
+  const openedDirectory = editorDirectoryForSender(event.sender);
+  if (!openedDirectory || !directory || path.resolve(openedDirectory).toLowerCase() !== path.resolve(directory).toLowerCase()) {
+    throw Object.assign(new Error('请求必须来自指定工程的编辑器窗口'), { code: 'WRONG_PROJECT' });
+  }
+  return openedDirectory;
+}
+
+function projectAssetFile(directory, project, trackName) {
+  const mediaInfo = project && project.media && project.media[trackName];
+  if (!mediaInfo || typeof mediaInfo.file !== 'string' || !mediaInfo.file) {
+    throw Object.assign(new Error(`工程缺少 ${trackName} 素材`), { code: 'MEDIA_NOT_FOUND' });
+  }
+  const root = fs.realpathSync(directory);
+  const candidate = path.resolve(root, mediaInfo.file);
+  const actual = fs.realpathSync(candidate);
+  const relative = path.relative(root, actual);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !fs.statSync(actual).isFile()) {
+    throw Object.assign(new Error('素材路径必须位于当前工程目录内'), { code: 'INVALID_MEDIA_PATH' });
+  }
+  return actual;
+}
+
+function createAgentMediaFile(extension) {
+  const directory = path.join(app.getPath('userData'), 'agent-media');
+  fs.mkdirSync(directory, { recursive: true });
+  return path.join(directory, `${crypto.randomUUID()}.${extension}`);
+}
+
+function expireAgentMediaFile(file) {
+  const timer = setTimeout(() => {
+    try { fs.unlinkSync(file); } catch { /* Keep a media excerpt that is still being read. */ }
+    try { fs.rmdirSync(path.dirname(file)); } catch { /* The directory may contain another active excerpt. */ }
+  }, 10 * 60 * 1000);
+  timer.unref();
+}
+
+async function extractAgentAudio({ directory, project, trackName, sourceStart, sourceDuration, speed = 1, timeDomain = 'source', time = sourceStart }) {
+  if (!['microphone', 'systemAudio'].includes(trackName) || !Number.isFinite(sourceStart) || sourceStart < 0 ||
+      !Number.isFinite(sourceDuration) || sourceDuration <= 0 || sourceDuration > 120 ||
+      !Number.isFinite(speed) || speed < 0.25 || speed > 8) {
+    throw Object.assign(new Error('音频区间或速度无效'), { code: 'INVALID_PARAMS' });
+  }
+  const track = project.media[trackName];
+  const sourceFile = projectAssetFile(directory, project, trackName);
+  const trackDuration = Number(track.duration) > 0 ? Number(track.duration) : (await media.probe(sourceFile)).duration;
+  const offset = Number(track.offset) || 0;
+  const audioStart = Math.max(0, sourceStart - offset);
+  const audioEnd = Math.min(trackDuration, sourceStart - offset + sourceDuration);
+  const actualSourceStart = audioStart + offset;
+  const actualSourceDuration = audioEnd - audioStart;
+  if (actualSourceDuration <= 0.05) throw Object.assign(new Error('所选录屏时间没有对应的音轨内容'), { code: 'INVALID_PARAMS' });
+  const outputFile = createAgentMediaFile('wav');
+  const atempo = [];
+  let factor = speed;
+  while (factor > 2) { atempo.push('atempo=2'); factor /= 2; }
+  while (factor < 0.5) { atempo.push('atempo=0.5'); factor /= 0.5; }
+  atempo.push(`atempo=${factor.toFixed(6)}`);
+  const args = [
+    '-loglevel', 'error', '-ss', audioStart.toFixed(3), '-t', actualSourceDuration.toFixed(3), '-i', sourceFile,
+    '-vn', '-af', atempo.join(','), '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', '-f', 'wav', outputFile,
+  ];
+  try {
+    await media.ffmpeg(args);
+    expireAgentMediaFile(outputFile);
+    const adjustedTime = timeDomain === 'output' ? time + (actualSourceStart - sourceStart) / speed : actualSourceStart;
+    return { path: outputFile, mimeType: 'audio/wav', timeDomain, time: adjustedTime, sourceStart: actualSourceStart, sourceDuration: actualSourceDuration, duration: actualSourceDuration / speed };
+  } catch (error) {
+    try { fs.unlinkSync(outputFile); } catch { /* No output was created. */ }
+    throw error;
+  }
 }
 
 function toggleCameraPreview(visible, deviceId) {
@@ -431,6 +535,128 @@ function listWallpapers() {
 
 function registerIpc() {
   ipcMain.handle('app:environment', () => ({ ...environment, projectsRoot: projectsRoot(), version: app.getVersion() }));
+  ipcMain.on('agent:ready', (event, payload) => { if (agentService) agentService.rendererReady(event.sender, payload); });
+  ipcMain.on('agent:response', (event, payload) => { if (agentService) agentService.rendererResponse(event.sender, payload); });
+  ipcMain.handle('subtitle:environment', (event) => {
+    if (!editorDirectoryForSender(event.sender) || !transcription) return { ready: false, executable: null, model: null };
+    const value = transcription.environment();
+    return { ready: value.ready, executable: value.executable, model: value.model };
+  });
+  ipcMain.handle('subtitle:generate', async (event, payload = {}) => {
+    const directory = requireEditorRequest(event, payload.directory);
+    if (!transcription || !payload.project) throw Object.assign(new Error('语音识别服务尚未就绪'), { code: 'ASR_UNAVAILABLE' });
+    const result = await transcription.generate({
+      directory,
+      project: payload.project,
+      track: payload.track,
+      scope: payload.scope,
+    });
+    return { jobId: result.jobId };
+  });
+  ipcMain.handle('jobs:get', (event, payload = {}) => {
+    const directory = editorDirectoryForSender(event.sender);
+    if (!directory || !transcription) throw Object.assign(new Error('请求必须来自 Recly 编辑器'), { code: 'WRONG_PROJECT' });
+    return transcription.get(payload.jobId, directory);
+  });
+  ipcMain.handle('jobs:cancel', (event, payload = {}) => {
+    const directory = editorDirectoryForSender(event.sender);
+    if (!directory || !transcription) throw Object.assign(new Error('请求必须来自 Recly 编辑器'), { code: 'WRONG_PROJECT' });
+    return transcription.cancel(payload.jobId, directory);
+  });
+  ipcMain.handle('subtitle:save-srt', async (event, payload = {}) => {
+    if (!editorDirectoryForSender(event.sender)) throw Object.assign(new Error('请求必须来自 Recly 编辑器'), { code: 'WRONG_PROJECT' });
+    if (typeof payload.content !== 'string' || payload.content.includes('\0') || Buffer.byteLength(payload.content, 'utf8') > 10 * 1024 * 1024) {
+      throw Object.assign(new Error('SRT 内容无效或超过 10 MB'), { code: 'INVALID_PARAMS' });
+    }
+    const name = String(payload.name || 'subtitles').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 120) || 'subtitles';
+    const defaultName = name.toLowerCase().endsWith('.srt') ? name : `${name}.srt`;
+    const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: '保存字幕文件', defaultPath: path.join(app.getPath('documents'), defaultName),
+      filters: [{ name: 'SubRip 字幕', extensions: ['srt'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    const file = path.extname(result.filePath).toLowerCase() === '.srt' ? result.filePath : `${result.filePath}.srt`;
+    await fs.promises.writeFile(file, payload.content, 'utf8');
+    return file;
+  });
+  ipcMain.handle('agent:media-frame', async (event, payload = {}) => {
+    const directory = requireEditorRequest(event, payload.directory);
+    const project = payload.project;
+    const sourceTime = Number(payload.sourceTime);
+    if (!Number.isFinite(sourceTime) || sourceTime < 0 || sourceTime >= Number(project?.media?.screen?.duration)) {
+      throw Object.assign(new Error('sourceTime 超出录屏范围'), { code: 'INVALID_PARAMS' });
+    }
+    const sourceFile = projectAssetFile(directory, project, 'screen');
+    const outputFile = createAgentMediaFile('png');
+    try {
+      await media.ffmpeg(['-loglevel', 'error', '-ss', sourceTime.toFixed(3), '-i', sourceFile, '-frames:v', '1', '-f', 'image2', outputFile]);
+      expireAgentMediaFile(outputFile);
+      return { path: outputFile, mimeType: 'image/png', sourceTime };
+    } catch (error) {
+      try { fs.unlinkSync(outputFile); } catch { /* No frame was produced. */ }
+      throw error;
+    }
+  });
+  ipcMain.handle('agent:audio-excerpt', async (event, payload = {}) => {
+    const directory = requireEditorRequest(event, payload.directory);
+    const project = payload.project;
+    let trackName = payload.track;
+    if (trackName && typeof trackName === 'object') {
+      trackName = ['microphone', 'systemAudio'].find((name) => project?.media?.[name]?.file === trackName.file);
+    }
+    const sourceStart = Number(payload.sourceStart);
+    const sourceDuration = Number(payload.sourceDuration || payload.duration);
+    const speed = Number(payload.speed) || 1;
+    const timeDomain = payload.timeDomain === 'output' ? 'output' : 'source';
+    if (timeDomain === 'output') {
+      const sourceEnd = sourceStart + sourceDuration;
+      const isRetained = (project?.timeline?.segments || []).some((segment) => sourceStart >= segment.sourceStart - 1e-6 && sourceEnd <= segment.sourceEnd + 1e-6);
+      if (!isRetained) throw Object.assign(new Error('成片音频区间不能跨剪辑点'), { code: 'INVALID_PARAMS' });
+    }
+    return extractAgentAudio({
+      directory, project, trackName, sourceStart, sourceDuration, speed,
+      timeDomain, time: Number(payload.time),
+    });
+  });
+  ipcMain.handle('agent:validate-export-output', (event, payload = {}) => {
+    const directory = requireEditorRequest(event, payload.directory);
+    const outputFile = path.resolve(payload.outputFile || '');
+    const expectedExtension = payload.kind === 'audio' ? '.m4a' : '.mp4';
+    if (!['audio', 'video'].includes(payload.kind) || path.extname(outputFile).toLowerCase() !== expectedExtension) {
+      throw Object.assign(new Error('导出格式与输出扩展名不匹配'), { code: 'INVALID_PARAMS' });
+    }
+    if (fs.existsSync(outputFile)) throw Object.assign(new Error('导出目标已存在，不能覆盖'), { code: 'OUTPUT_EXISTS' });
+    let parent;
+    try { parent = fs.realpathSync(path.dirname(outputFile)); } catch { throw Object.assign(new Error('导出目录不存在'), { code: 'INVALID_PARAMS' }); }
+    const resolvedOutput = path.resolve(parent, path.basename(outputFile)).toLowerCase();
+    const projectFile = path.join(directory, 'project.json');
+    const referenced = new Set([path.resolve(projectFile).toLowerCase()]);
+    const collect = (value) => {
+      if (Array.isArray(value)) return value.forEach(collect);
+      if (!value || typeof value !== 'object') return;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'file' && typeof child === 'string') referenced.add(path.resolve(path.isAbsolute(child) ? child : path.join(directory, child)).toLowerCase());
+        else collect(child);
+      }
+    };
+    collect(payload.project);
+    if (referenced.has(resolvedOutput)) throw Object.assign(new Error('不能覆盖工程文件或源素材'), { code: 'INVALID_PARAMS' });
+    return { valid: true, outputFile };
+  });
+  ipcMain.handle('export:begin', (event, payload = {}) => {
+    const directory = requireEditorRequest(event, payload.directory);
+    if (activeExport || activeExportSession) return { ok: false, message: '已有导出任务正在运行' };
+    activeExportSession = { directory: path.resolve(directory), sender: event.sender };
+    return { ok: true };
+  });
+  ipcMain.handle('export:end', (event, payload = {}) => {
+    const directory = editorDirectoryForSender(event.sender);
+    if (!activeExportSession || !directory || activeExportSession.sender !== event.sender || path.resolve(directory).toLowerCase() !== path.resolve(payload.directory || '').toLowerCase()) {
+      return { ok: false };
+    }
+    activeExportSession = null;
+    return { ok: true };
+  });
   ipcMain.handle('recorder:displays', () => listDisplays());
   ipcMain.handle('recorder:windows', (event, refresh = false) => refresh ? refreshWindows() : listWindows());
   ipcMain.handle('recorder:pick-area', () => pickArea());
@@ -702,6 +928,8 @@ function registerIpc() {
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('dialog:save-export', async (event, { name, kind }) => {
+    const automaticPath = automaticExportPath(name, kind);
+    if (automaticPath) return automaticPath;
     const extension = kind === 'audio' ? 'm4a' : 'mp4';
     const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
       title: '导出', defaultPath: path.join(app.getPath('videos'), `${name}.${extension}`),
@@ -711,21 +939,37 @@ function registerIpc() {
   });
 
   ipcMain.handle('export:mux', async (event, job) => {
-    const args = media.buildMuxArguments(job);
+    const directory = editorDirectoryForSender(event.sender);
+    if (!directory || path.resolve(directory).toLowerCase() !== path.resolve(job.directory || '').toLowerCase()) {
+      throw Object.assign(new Error('导出请求必须来自对应工程的编辑器窗口'), { code: 'WRONG_PROJECT' });
+    }
+    if (activeExport) throw Object.assign(new Error('已有导出编码任务正在运行'), { code: 'PROJECT_BUSY' });
+    if (activeExportSession && activeExportSession.sender !== event.sender) {
+      throw Object.assign(new Error('另一个编辑器正在导出'), { code: 'PROJECT_BUSY' });
+    }
+    if (activeExportSession && path.resolve(activeExportSession.directory).toLowerCase() !== path.resolve(job.directory || '').toLowerCase()) {
+      throw Object.assign(new Error('导出工程与当前锁定工程不一致'), { code: 'WRONG_PROJECT' });
+    }
+    const acquiredHere = !activeExportSession;
+    if (acquiredHere) activeExportSession = { directory: path.resolve(job.directory || ''), sender: event.sender };
+    const exportSession = activeExportSession;
+    let exportChild = null;
     try {
+      const args = media.buildMuxArguments(job);
       await media.ffmpeg(args, {
-        onSpawn: (child) => { activeExport = child; },
+        onSpawn: (child) => { exportChild = child; activeExport = child; },
         onStderr: (text) => {
           const match = /time=(\d+):(\d+):(\d+\.\d+)/.exec(text);
-          if (match) event.sender.send('export:mux-progress', (Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])) / Math.max(job.outputDuration, 0.001));
+          if (match && !event.sender.isDestroyed()) event.sender.send('export:mux-progress', (Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])) / Math.max(job.outputDuration, 0.001));
         },
       });
     } finally {
-      activeExport = null;
+      if (activeExport === exportChild) activeExport = null;
+      if (acquiredHere && activeExportSession === exportSession) activeExportSession = null;
     }
     return job.outputFile;
   });
-  ipcMain.on('export:cancel', () => { if (activeExport) activeExport.kill(); });
+  ipcMain.on('export:cancel', (event) => { if (activeExport && activeExportSession?.sender === event.sender) activeExport.kill(); });
   ipcMain.on('shell:open', (event, target) => shell.openPath(target));
   registerPresetsIpc(ipcMain);
   registerUpdaterIpc(ipcMain, shell);
@@ -749,17 +993,49 @@ if (!SELF_TEST && !app.requestSingleInstanceLock()) {
       callback({ video: sources[0], audio: 'loopback' });
     });
     registerIpc();
+    if (!SELF_TEST) {
+      const userDataPath = app.getPath('userData');
+      transcription = new TranscriptionManager({
+        media,
+        resourcesPath: app.isPackaged ? process.resourcesPath : null,
+        userDataPath,
+        tempDirectory: path.join(userDataPath, 'whisper-jobs'),
+      });
+      const endpointFile = path.resolve(process.env.RECLY_AGENT_ENDPOINT || path.join(userDataPath, 'agent-endpoint.json'));
+      agentService = createAgentService({
+        endpointFile,
+        projectsRoot,
+        listProjects,
+        openEditor,
+        getEditorWindow,
+        isEditorSender: (sender, directory) => {
+          const editor = getEditorWindow(directory);
+          return Boolean(editor && editor.webContents === sender);
+        },
+      });
+      try { await agentService.start(); } catch (error) {
+        agentService = null;
+        console.warn('[Agent] 本机服务启动失败：', error.message || error);
+      }
+    }
     setupTaskbarSafetyHooks(app);
     initShortcuts();
     initTray();
     app.on('before-quit', (event) => {
-      if (!hasRecordingWork()) return;
+      if (hasRecordingWork()) {
+        event.preventDefault();
+        const win = showRecorder();
+        void dialog.showMessageBox(win, {
+          type: 'warning', buttons: ['继续录制'], defaultId: 0, cancelId: 0,
+          message: '当前录制尚未结束', detail: '请先结束或放弃录制，再退出 Recly。',
+        }).catch((error) => console.warn('[DogSC] 显示录制退出提示失败：', error.message || error));
+        return;
+      }
+      if (drainingServices || (!agentService && !transcription)) return;
       event.preventDefault();
-      const win = showRecorder();
-      void dialog.showMessageBox(win, {
-        type: 'warning', buttons: ['继续录制'], defaultId: 0, cancelId: 0,
-        message: '当前录制尚未结束', detail: '请先结束或放弃录制，再退出 Recly。',
-      }).catch((error) => console.warn('[DogSC] 显示录制退出提示失败：', error.message || error));
+      drainingServices = true;
+      void Promise.allSettled([agentService && agentService.close(), transcription && transcription.close()])
+        .finally(() => app.quit());
     });
     if (SELF_TEST) {
       require('./selftest').run({ media, projectsRoot, createWindow, openEditor, showRecorder, showLibrary, toggleMemo, setEnvironment: (value) => { environment = value; } });

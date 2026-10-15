@@ -170,7 +170,10 @@ const originalLoad = Module._load;
 Module._load = function loadForInspector(request, parent, isMain) {
   if (request === 'electron') return electron;
   const parentPath = parent?.filename.replaceAll('/', '\\');
-  if (request === '../common' && parentPath?.endsWith('renderer\\editor\\inspector.js')) {
+  if (request === '../common' && (
+    parentPath?.endsWith('renderer\\editor\\inspector.js')
+    || parentPath?.endsWith('renderer\\editor\\subtitles-panel.js')
+  )) {
     return { element, fileUrl: (file) => file };
   }
   return originalLoad.call(this, request, parent, isMain);

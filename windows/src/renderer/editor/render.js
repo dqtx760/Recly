@@ -5,6 +5,8 @@
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { clamp, PATTERN_PRESETS } = require('../../core/model');
+const { activeCues } = require('../../core/subtitles');
+const timeline = require('../../core/timeline');
 const { cursorLibrary } = require('./cursors');
 
 function roundedRect(ctx, rect, radius) {
@@ -109,6 +111,83 @@ function createOffscreenCanvas(width, height) {
     return c;
   }
   return createMockCanvas(w, h);
+}
+
+function wrapSubtitleLines(ctx, text, maxWidth) {
+  const lines = [];
+  for (const paragraph of String(text).split(/\r?\n/)) {
+    let line = '';
+    for (const character of Array.from(paragraph)) {
+      const candidate = line + character;
+      if (line && ctx.measureText(candidate).width > maxWidth) {
+        lines.push(line.trimEnd());
+        line = character.trimStart();
+      } else line = candidate;
+    }
+    lines.push(line);
+  }
+  return lines.filter((line) => line.length > 0);
+}
+
+function rgba(color, alpha) {
+  const value = /^#([\da-f]{6})$/i.exec(color || '');
+  if (!value) return `rgba(0,0,0,${alpha})`;
+  const hex = value[1];
+  return `rgba(${parseInt(hex.slice(0, 2), 16)},${parseInt(hex.slice(2, 4), 16)},${parseInt(hex.slice(4, 6), 16)},${alpha})`;
+}
+
+function drawSubtitleText(ctx, project, scene, sourceTime) {
+  const cues = activeCues(project, sourceTime, scene.outputTime);
+  if (!cues.length || project.subtitles?.enabled === false) return;
+  const style = project.subtitles.style;
+  const { width, height } = scene;
+  const scale = scene.styleScale || 1;
+  const fontSize = Math.max(12, style.fontSize * scale);
+  const lineHeight = fontSize * 1.24;
+  const paddingY = fontSize * 0.18;
+  const safeTop = height * 0.08;
+  const safeBottom = height * 0.92 - fontSize * 0.32 - paddingY;
+  const bottom = clamp(style.baselineY * height, safeTop + fontSize * 0.92 + paddingY, safeBottom);
+  const maxLines = Math.max(1, Math.floor((bottom - safeTop - fontSize * 0.92 - paddingY) / lineHeight) + 1);
+  const text = cues.map((cue) => cue.text.trim()).filter(Boolean).join('\n');
+  if (!text) return;
+
+  ctx.save();
+  ctx.font = `600 ${fontSize}px "DogSC PuHui", "Microsoft YaHei", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  let lines = wrapSubtitleLines(ctx, text, width * 0.88);
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    const last = Array.from(lines[lines.length - 1]);
+    while (last.length > 1 && ctx.measureText(`${last.join('')}…`).width > width * 0.88) last.pop();
+    lines[lines.length - 1] = `${last.join('')}…`;
+  }
+  if (!lines.length) {
+    ctx.restore();
+    return;
+  }
+
+  const widths = lines.map((line) => ctx.measureText(line).width);
+  const paddingX = fontSize * 0.42;
+  const boxWidth = Math.min(width * 0.94, Math.max(...widths) + paddingX * 2);
+  const boxHeight = lineHeight * lines.length + paddingY * 2;
+  const firstBaseline = bottom - (lines.length - 1) * lineHeight;
+  const boxY = firstBaseline - fontSize * 0.92 - paddingY;
+  const box = { x: (width - boxWidth) / 2, y: boxY, width: boxWidth, height: boxHeight };
+  ctx.fillStyle = rgba(style.backgroundColor, style.backgroundOpacity);
+  roundedRect(ctx, box, fontSize * 0.18);
+  ctx.fill();
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(2, fontSize * 0.075);
+  ctx.strokeStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillStyle = style.color;
+  lines.forEach((line, index) => {
+    const y = firstBaseline + index * lineHeight;
+    ctx.strokeText(line, width / 2, y, width * 0.88);
+    ctx.fillText(line, width / 2, y, width * 0.88);
+  });
+  ctx.restore();
 }
 
 function expandPolygon(points, distance) {
@@ -944,6 +1023,8 @@ class Compositor {
       this.drawCamera(ctx, { ...scene.camera, opacity: (scene.camera.opacity ?? 1) * cameraVisibility }, frames.camera);
     }
     if (scene.stickers && scene.stickers.length) this.drawStickers(ctx, scene.stickers, frames);
+    const sourceTime = timeline.locate(project.timeline?.segments || [], scene.outputTime ?? 0)?.sourceTime;
+    if (Number.isFinite(sourceTime)) drawSubtitleText(ctx, project, scene, sourceTime);
   }
 }
 
@@ -953,4 +1034,6 @@ module.exports = {
   createMockCanvas,
   renderPerspectiveMesh,
   drawTexturedTriangle,
+  wrapSubtitleLines,
+  drawSubtitleText,
 };

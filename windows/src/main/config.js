@@ -145,6 +145,19 @@ function getHideDesktopIconsDuringRecording() {
   return loadConfig().hideDesktopIconsDuringRecording === true;
 }
 
+function getExportRoot() {
+  const dir = loadConfig().exportRoot;
+  return typeof dir === 'string' && dir.trim() ? path.resolve(dir.trim()) : null;
+}
+
+function setExportRoot(dir) {
+  if (typeof dir !== 'string' || !dir.trim()) throw new Error('请选择有效的导出文件夹');
+  const config = loadConfig();
+  config.exportRoot = path.resolve(dir.trim());
+  saveConfig(config);
+  return config.exportRoot;
+}
+
 function setHideDesktopIconsDuringRecording(enabled) {
   if (typeof enabled !== 'boolean') {
     throw new Error('Invalid desktop icon visibility setting');
@@ -173,6 +186,15 @@ function registerConfigIpc(ipc = (electron && electron.ipcMain), dialogInstance 
 
   ipc.handle('config:get-hide-desktop-icons', () => getHideDesktopIconsDuringRecording());
   ipc.handle('config:set-hide-desktop-icons', (event, enabled) => setHideDesktopIconsDuringRecording(enabled));
+  ipc.handle('config:get-export-root', () => getExportRoot());
+  ipc.handle('config:choose-export-root', async () => {
+    const result = await dialogInstance.showOpenDialog({
+      title: '选择导出文件夹',
+      defaultPath: getExportRoot() || getDefaultProjectsRoot(),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return result.canceled || !result.filePaths?.length ? null : setExportRoot(result.filePaths[0]);
+  });
 
   ipc.handle('config:choose-projects-root', async (event) => {
     if (!dialogInstance || typeof dialogInstance.showOpenDialog !== 'function') {
@@ -203,6 +225,8 @@ function registerConfigIpc(ipc = (electron && electron.ipcMain), dialogInstance 
 }
 
 module.exports = {
+  getExportRoot,
+  setExportRoot,
   getProjectsRoot,
   setProjectsRoot,
   getHideDesktopIconsDuringRecording,

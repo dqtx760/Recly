@@ -9,6 +9,7 @@ const { MosaicClip, StickerClip } = require('../../core/opening-overlay');
 const { makeCameraMotionClip } = require('../../core/camera-motion');
 const { Store } = require('./store');
 const { Preview } = require('./preview');
+const { attachAgentBridge } = require('./agent-bridge');
 const { TimelineView } = require('./timeline-view');
 const { Inspector, TABS } = require('./inspector');
 const { openExportDialog } = require('./export-dialog');
@@ -446,8 +447,25 @@ async function main() {
     match[1]();
   });
 
-  // 关窗前把还没落盘的改动写完。
-  window.addEventListener('beforeunload', () => { store.save(); });
+  // 有未落盘更改时先拦住关闭；只在最新版本保存成功后重新关闭。
+  let closeSaveInProgress = false;
+  const beforeUnload = (event) => {
+    if (store.saveState === 'saved' && store.savedRevision === store.revision) return;
+    event.preventDefault();
+    if (closeSaveInProgress) return;
+    closeSaveInProgress = true;
+    store.save({ throwOnError: true, untilStable: true }).then(() => {
+      if (store.saveState !== 'saved' || store.savedRevision !== store.revision) throw new Error('最新工程版本尚未保存');
+      window.removeEventListener('beforeunload', beforeUnload);
+      window.close();
+    }).catch((error) => {
+      closeSaveInProgress = false;
+      toast(`保存失败，工程窗口已保留：${String(error.message || error)}`);
+    });
+  };
+  window.addEventListener('beforeunload', beforeUnload);
+  const agentBridge = attachAgentBridge({ ipcRenderer, store, preview, directory, documentRef: document });
+  window.reclyEditor.agentBridge = agentBridge;
   document.title = `${project.name} — Recly`;
 
   // 自测钩子：切到运镜面板、选中第一段缩放并跳到它的保持区间。

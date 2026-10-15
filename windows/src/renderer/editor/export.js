@@ -196,7 +196,7 @@ async function exportProject({ project, directory, outputFile, kind = 'video', r
     ipcRenderer.on('export:mux-progress', onMux);
     const abort = () => ipcRenderer.send('export:cancel');
     if (signal) signal.addEventListener('abort', abort);
-    return ipcRenderer.invoke('export:mux', { ...job, audioTracks: tracks, segments, sourceDuration, outputDuration, outputFile })
+    return ipcRenderer.invoke('export:mux', { ...job, directory, audioTracks: tracks, segments, sourceDuration, outputDuration, outputFile })
       .catch((error) => { throw (signal && signal.aborted ? new ExportCancelled() : error); })
       .finally(() => {
         ipcRenderer.removeListener('export:mux-progress', onMux);

@@ -3,6 +3,7 @@
 // 所有视觉尺寸按 1080 短边设计（见 scene.js 的 canonicalStyleScale）。
 
 const { randomUUID } = require('node:crypto');
+const { normalizeSubtitles } = require('./subtitles');
 
 const clamp = (value, lower, upper) => Math.min(Math.max(value, lower), upper);
 const even = (value) => Math.max(Math.round(value / 2) * 2, 2);
@@ -141,6 +142,7 @@ function makeProject({ name, media, capture }) {
     cursorStyle: defaultCursorStyle(),
     motion: defaultMotion(),
     audio: defaultAudio(),
+    subtitles: normalizeSubtitles(),
     openingSequence: defaultOpeningSequence(),
     previewQuality: 'balanced',
     zoomAnimations: [],
@@ -280,6 +282,7 @@ function normalizeProject(project) {
   project.cursorStyle = merge(defaultCursorStyle(), project.cursorStyle);
   project.motion = merge(defaultMotion(), project.motion);
   project.audio = merge(defaultAudio(), project.audio);
+  project.subtitles = normalizeSubtitles(project.subtitles);
   project.openingSequence = merge(defaultOpeningSequence(), project.openingSequence);
   project.previewQuality = project.previewQuality === 'full' ? 'full' : 'balanced';
   project.zoomAnimations = project.zoomAnimations || [];

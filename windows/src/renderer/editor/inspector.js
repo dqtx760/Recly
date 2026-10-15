@@ -10,6 +10,7 @@ const { MosaicClip, StickerClip } = require('../../core/opening-overlay');
 const timeline = require('../../core/timeline');
 const { planAutoZoom } = require('../../core/zoom');
 const { isInside } = require('../../core/pointer');
+const { renderSubtitlesPanel } = require('./subtitles-panel');
 
 const TABS = [
   { id: 'canvas', label: '画面', icon: 'canvas' },
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'cursor', label: '光标', icon: 'cursor' },
   { id: 'camera', label: '摄像头', icon: 'camera' },
   { id: 'audio', label: '声音', icon: 'speaker' },
+  { id: 'subtitles', label: '字幕', icon: 'memo' },
 ];
 
 class Inspector {
@@ -847,6 +849,10 @@ class Inspector {
       sections.push(this.section('片段音量', element('p', { class: 'note' }, '在时间线上选中一段录屏后，可单独调整该段麦克风和系统声音。')));
     }
     return sections;
+  }
+
+  subtitlesPanel() {
+    return renderSubtitlesPanel(this);
   }
 }
 

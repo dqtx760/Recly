@@ -1,0 +1,31 @@
+.subtitles-panel { padding-bottom: 12px; }
+.subtitles-heading, .subtitles-list-heading, .subtitle-cue-heading, .subtitles-actions { display: flex; align-items: center; gap: 7px; }
+.subtitles-heading, .subtitles-list-heading { justify-content: space-between; }
+.subtitles-heading h3, .subtitles-section h4, .subtitles-candidate h4 { margin: 0 0 7px; font-size: 13px; }
+.subtitles-section, .subtitles-candidate { padding-top: 14px; }
+.subtitles-note { margin: 0 0 9px; color: var(--muted); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.subtitles-note.error { color: var(--danger); }
+.subtitles-note.warning { padding: 8px; border-radius: 8px; color: #77530c; background: #fff3cf; }
+.subtitles-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0 0 9px; color: var(--ink-soft); font-size: 11.5px; }
+.subtitles-field input[type=number], .subtitles-field select { width: 92px; height: 29px; padding: 0 7px; border: 0; border-radius: 7px; background: var(--panel-soft); color: var(--ink); }
+.subtitles-field select { width: 150px; }
+.subtitles-field input[type=color] { width: 46px; height: 27px; border: 0; padding: 0; background: transparent; }
+.subtitles-field input[type=range] { width: 105px; accent-color: var(--ink); }
+.subtitles-toggle { flex: none; min-width: 68px; height: 29px; padding: 0 9px; border-radius: 8px; background: var(--panel-soft); color: var(--muted); font-size: 11px; font-weight: 600; }
+.subtitles-toggle.on { background: var(--accent-soft); color: var(--ink); }
+.subtitles-actions { flex-wrap: wrap; }
+.subtitles-actions .btn { min-height: 29px; padding: 0 9px; font-size: 11px; }
+.subtitle-cue { margin: 0 0 10px; padding: 9px; border-radius: 9px; background: var(--panel-soft); box-shadow: inset 0 0 0 1px var(--line); }
+.subtitle-cue-heading { margin-bottom: 7px; }
+.subtitle-cue-heading b { margin-right: auto; font-size: 11px; }
+.subtitle-cue-heading .alignment { color: var(--ok); font-size: 10px; }
+.subtitle-cue-heading .alignment.stale { color: #9a6810; }
+.subtitle-cue textarea { display: block; width: 100%; min-height: 48px; resize: vertical; padding: 7px; border: 0; border-radius: 7px; background: var(--panel); color: var(--ink); font: inherit; font-size: 12px; line-height: 1.4; }
+.subtitle-times { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 8px; }
+.subtitle-times .subtitles-field { display: block; margin: 0; }
+.subtitle-times .subtitles-field input { display: block; width: 100%; margin-top: 4px; }
+.subtitle-cue .subtitles-note { margin-top: 7px; }
+.subtitles-candidate { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); }
+.subtitles-candidate ul { display: grid; gap: 5px; padding: 0; list-style: none; }
+.subtitles-candidate li { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 6px; font-size: 11px; line-height: 1.4; }
+.subtitles-candidate time { color: var(--muted); font-variant-numeric: tabular-nums; }

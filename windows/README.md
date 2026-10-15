@@ -55,6 +55,8 @@ npm start
 | 效果编辑 | 双击效果轨添加；S 分割；Ctrl+C / Ctrl+V 复制粘贴，Ctrl+Shift+V 粘贴属性 |
 | 预览质量 | 流畅预览使用代理，原画预览使用源视频；隐藏窗口时暂停播放，导出始终使用源素材 |
 | 导出 | MP4（H.264 + AAC）与 M4A；原始 / 1080p / 1440p / 4K，30 / 60 FPS；显示阶段、已用与预计剩余时间，可取消 |
+| 离线字幕 | whisper.cpp 识别麦克风或系统音频；可识别全部源素材或初剪后保留内容，修改字幕文字、时间和样式，预览并随视频导出 |
+| Agent 接口 | MCP / CLI 读取工程、剪切重排、变速、调整现有画面及声音、纠正字幕、截图 / 音频预览、保存、撤销重做和导出 |
 | 项目库批量删除 | 项目库提供「全选删除」，一次确认后将所有可见项目及其素材移到 Windows 回收站；失败项目会单独提示 |
 
 ## 与原版的差异
@@ -78,7 +80,38 @@ npm start
 
 ## 仍未完成的能力
 
-字幕编辑、自动识别字幕、根据文稿识别位置的语音跟随提词器、屏幕 3D 的聚焦虚化，以及完整英文产品界面尚未接入。iPhone / iPad 原生有线采集也尚未接入，方案和实机验证要求见 [设备录制调研](docs/ios-device-recording-20261011.md)。Canvas 3D 与原版渲染实现不同；剪切点的镜头接续仍见上方说明。
+根据文稿识别位置的语音跟随提词器、屏幕 3D 的聚焦虚化，以及完整英文产品界面尚未接入。iPhone / iPad 原生有线采集也尚未接入，方案和实机验证要求见 [设备录制调研](docs/ios-device-recording-20261011.md)。Canvas 3D 与原版渲染实现不同；剪切点的镜头接续仍见上方说明。
+
+## 离线字幕与 Agent 接手
+
+在编辑器的「字幕」面板选择麦克风或系统声音，以及全部源素材或剪辑保留区间，启动识别后可逐条纠错、调整时间和样式。你可以先初剪再交给 Agent，也可以录制完成后直接交给 Agent。软件提供操作接口，具体剪辑决策由所连接的 Agent 执行，没有内置自动剪辑决策。
+
+Git 不包含 `runtime/whisper/` 下的程序和模型。源码运行与打包需要准备：
+
+```text
+runtime/whisper/
+  Release/whisper-cli.exe
+  Release/…                 # 与该构建配套的 DLL；CUDA 构建还需对应 CUDA 依赖
+  ggml-small.bin            # 多语言模型，支持中文
+```
+
+使用与机器兼容的 whisper.cpp 构建及模型；CUDA 加速取决于 NVIDIA 显卡、驱动和构建所需的 CUDA 依赖，不保证所有 GPU 可用。`RECLY_WHISPER_EXE` 和 `RECLY_WHISPER_MODEL` 可以覆盖程序及模型路径。缺少环境时字幕面板会给出原因。打包脚本会复制实际的 `runtime/whisper/` 目录，环境变量覆盖路径不能代替待打包目录。
+
+先启动 Recly 并打开工程，在本目录运行：
+
+```powershell
+npm run agent -- project.list
+npm run agent -- project.get --params-file request.json
+```
+
+`request.json` 是 UTF-8 JSON 文件，包含 `directory`，值为 `project.list` 返回的工程目录。MCP 客户端使用 `node` 启动 `agent/recly-mcp.js` 的绝对路径；打包版脚本位于 `resources/agent/`。客户端需自行配置，并具备工具调用能力。版本校验、剪辑、字幕纠错与导出示例见 [Agent 控制说明](docs/agent-control.md)。
+
+准备运行环境后执行 `npm run package`。打包配置为 `overwrite: false`；如默认输出目录已存在，请给 `RECLY_PACKAGE_OUT` 指定新目录：
+
+```powershell
+$env:RECLY_PACKAGE_OUT = Join-Path $PWD ('dist-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+npm run package
+```
 
 ## 已知限制
 
@@ -91,10 +124,13 @@ npm start
 
 ```bash
 npm test          # 算法、编辑状态、音频、素材导入与渲染回归
+npm run test:agent # Agent 接口、字幕与工程状态单元测试
 npm run selftest  # 端到端自测，约 1 分钟
 ```
 
 `selftest` 会在本机真实跑一遍：录整屏 / 窗口 / 区域 → 整理成项目 → 导出三次（原始分辨率、剪切加变速后的 1080p60、仅音频）→ 把成片解码回来核对颜色和时长，再用合成信号把"摄像头 + 麦克风 + 系统声音"的附加轨路径走一遍。期间只会弹出一个色卡窗口，不操作桌面上的其他东西，也不打开真实的麦克风和摄像头。结果写在 `%TEMP%\dogsc-selftest\report.json`。
+
+真实 ASR 和 Electron Agent 验收需显式提供本地音频或工程夹具，私有录制不随仓库分发，要求见 [Agent 验证说明](docs/agent-control.md#验证)。
 
 ## 目录
 

@@ -19,7 +19,10 @@ const {
   getDefaultProjectsRoot,
   loadConfig,
   saveConfig,
+  getExportRoot,
+  setExportRoot,
 } = require('../src/main/config');
+const { automaticExportPath } = require('../src/main/export-path');
 
 let passed = 0;
 const test = (name, body) => {
@@ -220,11 +223,81 @@ async function runTests() {
     assert.equal(getProjectsRoot(), path.resolve(initialDir));
   });
 
-  // 清理临时测试目录
+  await test('导出路径独立持久化，保留工程目录和其他配置', () => {
+    setConfigPath(path.join(tmpDir, 'export-config.json'));
+    saveConfig({ projectsRoot: 'D:/Projects', keep: 42 });
+    assert.equal(getExportRoot(), null);
+    const folder = path.join(tmpDir, '导出成片');
+    assert.equal(setExportRoot(folder), folder);
+    assert.equal(getExportRoot(), folder);
+    assert.deepEqual(loadConfig(), { projectsRoot: 'D:/Projects', keep: 42, exportRoot: folder });
+    assert.throws(() => setExportRoot('  '), /有效的导出文件夹/);
+  });
+
+  await test('选择导出目录：保存选择，取消时保留原路径', async () => {
+    setConfigPath(path.join(tmpDir, 'export-dialog-config.json'));
+    const handlers = new Map();
+    let canceled = false;
+    const folder = path.join(tmpDir, '成片输出');
+    registerConfigIpc({ handle: (name, handler) => handlers.set(name, handler) }, {
+      showOpenDialog: async options => {
+        assert.equal(options.title, '选择导出文件夹');
+        return { canceled, filePaths: canceled ? [] : [folder] };
+      },
+    });
+    assert.equal(await handlers.get('config:get-export-root')(), null);
+    assert.equal(await handlers.get('config:choose-export-root')(), folder);
+    canceled = true;
+    assert.equal(await handlers.get('config:choose-export-root')(), null);
+    assert.equal(await handlers.get('config:get-export-root')(), folder);
+  });
+
+  await test('自动导出文件名、音频扩展名、重名保护和不可用路径', () => {
+    setConfigPath(path.join(tmpDir, 'export-files-config.json'));
+    assert.equal(automaticExportPath('录屏', 'video'), null);
+    const folder = path.join(tmpDir, '自动导出');
+    setExportRoot(folder);
+    const first = automaticExportPath('录屏', 'video');
+    assert.equal(first, path.join(folder, '录屏.mp4'));
+    fs.writeFileSync(first, 'keep');
+    fs.writeFileSync(path.join(folder, '录屏 (2).mp4.h264.tmp'), 'busy');
+    assert.equal(automaticExportPath('录屏', 'video'), path.join(folder, '录屏 (3).mp4'));
+    assert.equal(fs.readFileSync(first, 'utf8'), 'keep');
+    assert.equal(automaticExportPath('录屏', 'audio'), path.join(folder, '录屏.m4a'));
+    assert.equal(automaticExportPath('../CON:* ', 'video'), path.join(folder, '.._CON__.mp4'));
+    assert.equal(automaticExportPath('CON', 'video'), path.join(folder, '_CON.mp4'));
+    setExportRoot(first);
+    assert.throws(() => automaticExportPath('录屏', 'video'));
+  });
+
+  await test('已配置时不弹保存窗口，未配置时保留选择和取消流程', async () => {
+    const vm = require('node:vm');
+    const source = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+    const start = source.indexOf("  ipcMain.handle('dialog:save-export'");
+    const end = source.indexOf("  ipcMain.handle('export:mux'", start);
+    let handler;
+    let calls = 0;
+    let canceled = false;
+    vm.runInNewContext(source.slice(start, end), {
+      ipcMain: { handle: (_name, fn) => { handler = fn; } },
+      automaticExportPath, path,
+      app: { getPath: () => tmpDir },
+      BrowserWindow: { fromWebContents: () => null },
+      dialog: { showSaveDialog: async () => { calls++; return { canceled, filePath: path.join(tmpDir, '选择的位置.mp4') }; } },
+    });
+    setConfigPath(path.join(tmpDir, 'export-handler-config.json'));
+    setExportRoot(path.join(tmpDir, '配置的导出路径'));
+    assert.equal(await handler({ sender: {} }, { name: '测试', kind: 'video' }), path.join(tmpDir, '配置的导出路径', '测试.mp4'));
+    assert.equal(calls, 0);
+    saveConfig({});
+    assert.equal(await handler({ sender: {} }, { name: '测试', kind: 'video' }), path.join(tmpDir, '选择的位置.mp4'));
+    canceled = true;
+    assert.equal(await handler({ sender: {} }, { name: '测试', kind: 'video' }), null);
+    assert.equal(calls, 2);
+  });
+
+  // 保留临时测试文件，遵守禁止批量删除的约束。
   resetConfigPath();
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {}
 
   console.log(`\n${passed} 项 config 测试全部通过！`);
 }

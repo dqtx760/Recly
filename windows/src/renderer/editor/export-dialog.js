@@ -16,7 +16,7 @@ function openExportDialog(store, preview, modal) {
   const chips = (values, key, onChange) => element('div', { class: 'chips' }, Object.entries(values).map(([value, label]) =>
     element('button', { class: String(options[key]) === value ? 'active' : '', onclick: () => { options[key] = key === 'frameRate' ? Number(value) : value; onChange(); } }, label)));
 
-  function showOptions() {
+  function showOptions(errorMessage = '') {
     const size = canvasDimensions(project.canvas, options.resolution, project.media.screen);
     const megabytes = options.kind === 'audio'
       ? duration * EXPORT_AUDIO_BITRATE / 8 / 1e6
@@ -32,17 +32,36 @@ function openExportDialog(store, preview, modal) {
       options.kind === 'video' ? element('div', { class: 'section' }, element('h3', {}, '帧率'), chips({ 30: '30 FPS', 60: '60 FPS' }, 'frameRate', showOptions)) : null,
       element('p', { class: 'note', style: 'margin-top:14px' }, summary),
       options.kind === 'audio' && !hasAudio ? element('p', { class: 'note', style: 'color:var(--danger)' }, '这个项目没有可导出的声音：没有录到麦克风或系统声音，或者都已静音。') : null,
+      errorMessage ? element('p', { class: 'note', style: 'color:var(--danger);user-select:text' }, errorMessage) : null,
       element('div', { class: 'actions' },
         element('button', { class: 'btn ghost', onclick: close }, '取消'),
         element('button', { class: 'btn primary', disabled: options.kind === 'audio' && !hasAudio, onclick: start }, '导出…'))));
   }
 
   async function start() {
-    const outputFile = await ipcRenderer.invoke('dialog:save-export', { name: project.name, kind: options.kind });
+    let outputFile;
+    try {
+      outputFile = await ipcRenderer.invoke('dialog:save-export', { name: project.name, kind: options.kind });
+    } catch (error) {
+      showOptions(`无法使用导出文件夹，请在主界面更改路径后重试。${String(error.message).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`);
+      return;
+    }
     if (!outputFile) return;
-    store.mutate((draft) => { draft.export = { ...options }; }, { history: false });
-    preview.pause();
-    await store.save();
+    let lockAcquired = false;
+    try {
+      const lock = await ipcRenderer.invoke('export:begin', { directory });
+      if (lock === false || lock?.ok === false) throw new Error(lock?.message || '当前工程已有导出任务正在运行');
+      lockAcquired = true;
+      store.mutate((draft) => { draft.export = { ...options }; }, { history: false });
+      preview.pause();
+      await store.save({ throwOnError: true, untilStable: true });
+    } catch (error) {
+      if (lockAcquired) {
+        try { await ipcRenderer.invoke('export:end', { directory }); } catch {}
+      }
+      showOptions(`导出尚未开始：${String(error.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`);
+      return;
+    }
 
     const controller = new AbortController();
     const stage = element('b', {}, '正在准备');
@@ -88,6 +107,12 @@ function openExportDialog(store, preview, modal) {
         element('div', { class: 'actions' },
           element('button', { class: 'btn', onclick: showOptions }, '返回导出设置'),
           element('button', { class: 'btn primary', onclick: close }, '关闭'))));
+    } finally {
+      if (lockAcquired) {
+        try { await ipcRenderer.invoke('export:end', { directory }); } catch (error) {
+          showOptions(`导出结束时释放工程锁失败：${String(error.message || error)}`);
+        }
+      }
     }
   }
 

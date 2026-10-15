@@ -11,6 +11,8 @@ class Store {
   constructor(directory, project) {
     this.directory = directory;
     this.project = project;
+    this.revision = Number.isSafeInteger(project.revision) && project.revision >= 0 ? project.revision : 0;
+    this.project.revision = this.revision;
     this.pointerTrack = loadPointerTrack(directory, project);
     this.selection = null; // { type: 'segment' | 'zoom' | 'screen' | 'camera' | 'mosaic' | 'sticker', id }
     this.listeners = new Set();
@@ -19,6 +21,8 @@ class Store {
     this.gesture = null;
     this.saveTimer = null;
     this.saveState = 'saved';
+    this.savedRevision = this.revision;
+    this.saveQueue = Promise.resolve();
     this.refreshDerived();
   }
 
@@ -34,12 +38,18 @@ class Store {
   mutate(change, { history = true } = {}) {
     const before = history && !this.gesture ? JSON.stringify(this.project) : null;
     change(this.project);
+    this.revision += 1;
+    this.project.revision = this.revision;
     if (before !== null) this.pushUndo(before);
     this.afterChange();
   }
 
   pushUndo(snapshot) {
-    if (snapshot === JSON.stringify(this.project)) return;
+    const previous = JSON.parse(snapshot);
+    const current = JSON.parse(JSON.stringify(this.project));
+    delete previous.revision;
+    delete current.revision;
+    if (JSON.stringify(previous) === JSON.stringify(current)) return;
     this.undoStack.push(snapshot);
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
@@ -62,6 +72,8 @@ class Store {
     const media = this.project.media;
     this.project = JSON.parse(snapshot);
     this.project.media = media; // 素材引用不随撤销变化
+    this.revision += 1;
+    this.project.revision = this.revision;
     if (this.selection) {
       const pool = this.clipPool(this.selection.type);
       if (!pool.some((item) => item.id === this.selection.id)) this.selection = null;
@@ -86,15 +98,17 @@ class Store {
   }
 
   undo() {
-    if (!this.undoStack.length) return;
+    if (!this.undoStack.length) return false;
     this.redoStack.push(JSON.stringify(this.project));
     this.restore(this.undoStack.pop());
+    return true;
   }
 
   redo() {
-    if (!this.redoStack.length) return;
+    if (!this.redoStack.length) return false;
     this.undoStack.push(JSON.stringify(this.project));
     this.restore(this.redoStack.pop());
+    return true;
   }
 
   afterChange() {
@@ -127,20 +141,45 @@ class Store {
   scheduleSave() {
     this.saveState = 'pending';
     clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => this.save(), 500);
+    this.saveTimer = setTimeout(() => { void this.save(); }, 500);
   }
 
-  async save() {
+  save({ throwOnError = false, untilStable = false } = {}) {
     clearTimeout(this.saveTimer);
-    if (this.saveState === 'saved') return;
-    try {
-      await ipcRenderer.invoke('project:write', { directory: this.directory, project: this.project });
-      this.saveState = 'saved';
-    } catch (error) {
-      this.saveState = 'failed';
-      console.error('[DogSC] 保存失败', error);
+    if (this.saveState === 'saved' && this.savedRevision === this.revision) {
+      return Promise.resolve({ savedRevision: this.savedRevision, revision: this.revision, saveState: this.saveState });
     }
-    this.emit('save');
+    const task = this.saveQueue.catch(() => {}).then(async () => {
+      let savedRevision = this.savedRevision;
+      do {
+        const revision = this.revision;
+        const snapshot = JSON.parse(JSON.stringify(this.project));
+        try {
+          await ipcRenderer.invoke('project:write', { directory: this.directory, project: snapshot });
+        } catch (error) {
+          this.saveState = this.revision === revision ? 'failed' : 'pending';
+          this.emit('save');
+          if (throwOnError) throw error;
+          console.error('[DogSC] 保存失败', error);
+          return { savedRevision: this.savedRevision, revision: this.revision, saveState: this.saveState, error };
+        }
+        savedRevision = revision;
+        this.savedRevision = revision;
+        if (this.revision === revision) {
+          this.saveState = 'saved';
+          break;
+        }
+        this.saveState = 'pending';
+        if (!untilStable) {
+          this.scheduleSave();
+          break;
+        }
+      } while (untilStable);
+      this.emit('save');
+      return { savedRevision, revision: this.revision, saveState: this.saveState };
+    });
+    this.saveQueue = task.catch(() => {});
+    return task;
   }
 }
 

@@ -9,6 +9,8 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const resources = path.join(root, '..', 'Resources');
 const fonts = path.join(resources, 'Fonts');
+const whisper = path.join(root, 'runtime', 'whisper');
+const agent = path.join(root, 'agent');
 const appIconPng = path.join(root, 'assets', 'AppIconMaster.png');
 const license = path.join(root, '..', 'LICENSE');
 const build = path.join(root, 'build');
@@ -23,16 +25,20 @@ async function main() {
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', appIconPng, '-vf', 'scale=256:256', '-pix_fmt', 'bgra', icon], { stdio: 'inherit' });
 
   const { packager } = await import('@electron/packager');
+  const outputDirectory = process.env.RECLY_PACKAGE_OUT
+    ? path.resolve(process.env.RECLY_PACKAGE_OUT)
+    : path.join(root, 'dist');
   const [output] = await packager({
     dir: root,
     name: 'Recly',
     platform: 'win32',
     arch: 'x64',
-    out: path.join(root, 'dist'),
-    overwrite: true,
+    out: outputDirectory,
+    overwrite: false,
+    asar: { unpack: '**/node_modules/koffi/**' },
     icon,
-    extraResource: [fonts, appIconPng, icon, license],
-    ignore: [/^\/(dist|build|test|scripts)($|\/)/, /\.bat$/],
+    extraResource: [fonts, appIconPng, icon, license, whisper, agent],
+    ignore: [/^\/(dist|build|test|scripts|runtime)($|\/)/, /\.bat$/],
     win32metadata: { CompanyName: 'Recly', FileDescription: 'Recly', ProductName: 'Recly' },
   });
   console.log(`\n打包完成：${path.join(output, 'Recly.exe')}`);
