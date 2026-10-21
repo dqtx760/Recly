@@ -17,6 +17,7 @@ try {
 const $ = (id) => document.getElementById(id);
 const settingsKey = 'dogsc.recorder';
 const saved = JSON.parse(localStorage.getItem(settingsKey) || '{}');
+let cameraRequestSequence = 0;
 
 const state = {
   environment: { ok: false, reason: '正在检查 ffmpeg…' },
@@ -24,7 +25,7 @@ const state = {
   selection: { kind: 'display', displayId: null },
   selectionLabel: '',
   mic: { on: saved.mic ?? true, deviceId: saved.micId || null, permissionError: null },
-  cam: { on: false, deviceId: saved.camId || null },
+  cam: { on: Boolean(saved.cam), deviceId: saved.camId || null, requestId: 0, previewStatus: 'off', previewError: null, previewMessage: '' },
   sys: { on: saved.sys ?? true },
   hideDesktopIcons: false,
   savingDesktopIconSetting: false,
@@ -35,9 +36,24 @@ const state = {
 const persist = () => localStorage.setItem(settingsKey, JSON.stringify({
   mic: state.mic.on,
   micId: state.mic.deviceId,
+  cam: state.cam.on,
   camId: state.cam.deviceId,
   sys: state.sys.on,
 }));
+
+function requestCameraPreview(visible, deviceId) {
+  const requestId = ++cameraRequestSequence;
+  state.cam.requestId = requestId;
+  state.cam.previewStatus = visible ? 'checking' : 'off';
+  state.cam.previewError = null;
+  state.cam.previewMessage = '';
+  ipcRenderer.send('recorder:camera-preview', { visible, deviceId, requestId });
+  return requestId;
+}
+
+function restoreCameraPreviewIfEnabled() {
+  if (state.cam.on && state.cam.previewStatus === 'off') requestCameraPreview(true, state.cam.deviceId);
+}
 
 const SOURCE_LABELS = { display: '全屏录制', window: '窗口录制', area: '选定区域' };
 
@@ -102,7 +118,24 @@ function render() {
     $('mic-status').textContent = state.mic.permissionError || (state.mic.on ? '就绪' : '关闭');
     $('mic-status').classList.toggle('error', Boolean(state.mic.permissionError));
   }
-  if ($('cam-status')) $('cam-status').textContent = state.cam.on ? '开启' : '关闭';
+  const cameraStatus = $('cam-status');
+  if (cameraStatus) {
+    const labels = {
+      checking: '检测中',
+      ready: '就绪',
+      device_in_use_or_unreadable: '设备被占用/无法读取',
+      permission_denied: '缺少摄像头权限',
+      no_device: '没有摄像头',
+      no_frame: '未收到画面',
+      device_ended: '摄像头已断开',
+      unavailable: '摄像头读取失败',
+    };
+    cameraStatus.textContent = !state.cam.on ? '关闭'
+      : state.cam.previewStatus === 'error' ? (labels[state.cam.previewError] || '摄像头读取失败')
+        : labels[state.cam.previewStatus] || '检测中';
+    cameraStatus.classList.toggle('error', state.cam.on && state.cam.previewStatus === 'error');
+    cameraStatus.title = state.cam.on ? (state.cam.previewMessage || cameraStatus.textContent) : '';
+  }
   if ($('sys-desc')) $('sys-desc').textContent = state.sys.on ? '录制系统内部声音' : '已关闭';
 
   // 3. 兼容环境提示
@@ -171,13 +204,15 @@ async function chooseSource(kind) {
 }
 
 async function deviceMenu(kind, target) {
-  // 设备名称要先拿到一次授权才会给出。
+  // 摄像头菜单只枚举设备，避免默认摄像头占用时阻塞用户选择。
   let permissionError = null;
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia(kind === 'audioinput' ? { audio: true } : { video: true });
-    stream.getTracks().forEach((track) => track.stop());
-  } catch (error) {
-    permissionError = error;
+  if (kind === 'audioinput') {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch (error) {
+      permissionError = error;
+    }
   }
   let devices;
   try {
@@ -206,9 +241,11 @@ async function deviceMenu(kind, target) {
   if (!chosen) return;
   target.deviceId = chosen;
   target.on = true;
-  target.permissionError = permissionError && permissionError.name === 'NotAllowedError' ? '需要麦克风权限' : null;
+  if (target === state.mic) {
+    target.permissionError = permissionError && permissionError.name === 'NotAllowedError' ? '需要麦克风权限' : null;
+  }
   persist();
-  if (target === state.cam) ipcRenderer.send('recorder:camera-preview', { visible: true, deviceId: chosen });
+  if (target === state.cam) requestCameraPreview(true, chosen);
   await updateDeviceNames();
   render();
 }
@@ -231,14 +268,14 @@ async function updateDeviceNames() {
     }
     if (state.cam.deviceId) {
       const dev = devices.find((d) => d.kind === 'videoinput' && d.deviceId === state.cam.deviceId);
-      if (dev && dev.label && $('cam-name')) {
-        $('cam-name').textContent = dev.label;
+      if (dev && dev.label && $('cam-name-label')) {
+        $('cam-name-label').textContent = dev.label;
         $('cam-name').title = dev.label;
       }
-    } else if ($('cam-name')) {
+    } else if ($('cam-name-label')) {
       const defaultDev = devices.find((d) => d.kind === 'videoinput');
       if (defaultDev && defaultDev.label) {
-        $('cam-name').textContent = defaultDev.label;
+        $('cam-name-label').textContent = defaultDev.label;
         $('cam-name').title = defaultDev.label;
       }
     }
@@ -264,6 +301,13 @@ async function refreshProjectsRoot() {
   }
 }
 
+async function refreshExportRoot() {
+  const root = await ipcRenderer.invoke('config:get-export-root');
+  $('export-dir-path').textContent = root || '未设置，每次导出时选择';
+  $('export-dir-path').title = root || '';
+  $('change-export-dir').textContent = root ? '更改' : '设置';
+}
+
 // ------------------------------------------------------------------ 事件监听与交互绑定
 
 // 模式卡片点击
@@ -284,7 +328,7 @@ function toggleDevice(kind) {
   target.on = !target.on;
   persist();
   if (kind === 'cam') {
-    ipcRenderer.send('recorder:camera-preview', { visible: target.on, deviceId: target.deviceId });
+    requestCameraPreview(target.on, target.deviceId);
   }
   render();
 }
@@ -331,6 +375,14 @@ $('mic-name')?.addEventListener('click', (e) => {
 });
 $('cam')?.addEventListener('contextmenu', (e) => { e.preventDefault(); deviceMenu('videoinput', state.cam); });
 $('cam-row')?.addEventListener('contextmenu', (e) => { e.preventDefault(); deviceMenu('videoinput', state.cam); });
+$('cam-name')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  deviceMenu('videoinput', state.cam);
+});
+$('cam-name-label')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  deviceMenu('videoinput', state.cam);
+});
 // 保存位置更改
 $('change-save-dir')?.addEventListener('click', async () => {
   try {
@@ -345,6 +397,15 @@ $('change-save-dir')?.addEventListener('click', async () => {
 });
 
 // 打开保存文件夹
+$('change-export-dir')?.addEventListener('click', async () => {
+  try {
+    const chosen = await ipcRenderer.invoke('config:choose-export-root');
+    if (chosen) await refreshExportRoot();
+  } catch (error) {
+    window.alert(`无法设置导出文件夹：${error.message}`);
+  }
+});
+
 $('open-save-dir')?.addEventListener('click', () => {
   const dir = $('save-dir-path')?.title || $('save-dir-path')?.textContent;
   if (dir && dir !== '正在读取存储路径…') {
@@ -456,6 +517,7 @@ let timer = null;
 async function start() {
   const startBtn = $('start');
   if (startBtn) startBtn.disabled = true;
+  if (state.cam.on) requestCameraPreview(true, state.cam.deviceId);
   const { streams, problems } = await openStreams();
   const tracks = [];
   const fail = async (error) => {
@@ -467,6 +529,11 @@ async function start() {
     setTimeout(() => { state.environment.ok = true; render(); }, 6000);
   };
 
+  if (state.cam.on && !streams.camera) {
+    await fail(new Error(problems.length ? `摄像头未就绪（${problems.join('、')}），已取消录制。请检查摄像头是否被占用或在 Windows 隐私设置中授权。` : '未能获取摄像头画面，已取消录制。'));
+    if (startBtn) startBtn.disabled = false;
+    return;
+  }
   try {
     const prepared = await ipcRenderer.invoke('recorder:prepare', { selection: state.selection, frameRate: 60 });
     if (streams.camera) {
@@ -513,9 +580,9 @@ async function stop(discard) {
   clearInterval(timer);
   const session = state.session;
   state.session = null;
-
-  // 录制停止：主进程恢复显示主控制台窗口
-  ipcRenderer.send('recorder:show');
+  requestCameraPreview(false, state.cam.deviceId);
+  ipcRenderer.send('recorder:close-overlays');
+  ipcRenderer.send('recorder:hide');
 
   if ($('busyTitle')) $('busyTitle').textContent = discard ? '正在放弃这次录制…' : '正在整理素材…';
   show('busy');
@@ -532,6 +599,7 @@ async function stop(discard) {
     }
     await ipcRenderer.invoke('recorder:cancel', 'recording').catch(() => {});
     state.environment = { ...state.environment, ok: false, reason: String(error.message || error) };
+    ipcRenderer.send('recorder:show');
     show('idle');
     render();
     setTimeout(() => { state.environment.ok = true; render(); }, 6000);
@@ -542,11 +610,13 @@ async function stop(discard) {
       await ipcRenderer.invoke('recorder:cancel', 'recording');
     } catch (error) {
       state.environment = { ...state.environment, ok: false, reason: String(error.message || error) };
+      ipcRenderer.send('recorder:show');
       show('idle');
       render();
       setTimeout(() => { state.environment.ok = true; render(); }, 6000);
       return;
     }
+    ipcRenderer.send('recorder:show');
     show('idle');
     render();
     return;
@@ -562,6 +632,7 @@ async function stop(discard) {
     }
   } catch (error) {
     state.result = null;
+    ipcRenderer.send('recorder:show');
     if ($('doneTitle')) $('doneTitle').textContent = '这次录制没有保存成功';
     if ($('doneDetail')) {
       $('doneDetail').textContent = String(error.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -605,12 +676,25 @@ $('again')?.addEventListener('click', () => {
 
 // ------------------------------------------------------------------ IPC 消息与快捷键触发
 
+ipcRenderer.on('camera:status', (event, status) => {
+  if (!status || status.requestId !== state.cam.requestId || !state.cam.on) return;
+  state.cam.previewStatus = status.status;
+  state.cam.previewError = status.error || null;
+  state.cam.previewMessage = status.message || '';
+  if (status.status === 'ready' || status.status === 'error') updateDeviceNames();
+  render();
+});
+
 ipcRenderer.on('recorder:start', () => {
   if (!state.session && $('start') && !$('start').disabled) {
     show('idle');
     render();
     start();
   }
+});
+
+ipcRenderer.on('recorder:shown', () => {
+  restoreCameraPreviewIfEnabled();
 });
 
 ipcRenderer.on('recorder:stop', () => {
@@ -687,6 +771,8 @@ ipcRenderer.on('app:environment', (event, environment) => {
     console.error('Failed to load environment:', err);
   }
   await refreshProjectsRoot();
+  await refreshExportRoot();
   await updateDeviceNames();
+  restoreCameraPreviewIfEnabled();
   render();
 })();

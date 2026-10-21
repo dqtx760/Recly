@@ -147,7 +147,7 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
       }
       let cameraAspect = null;
       if (cameraSource) {
-        const cameraTime = sourceTime - (camera.offset || 0);
+        const cameraTime = sourceTime - ((camera.offset || 0) + (project.camera?.timeOffset || 0));
         if (cameraTime >= 0 && cameraTime <= camera.duration) {
           frames.camera = await guard(cameraSource.frameAt(cameraTime), '解码摄像头画面');
           cameraAspect = camera.width / camera.height;

@@ -28,10 +28,11 @@ test('recorder.html 包含全部 Bandicam 控制台必需元素 ID', () => {
     'win-min', 'win-close', 'idle', 'live', 'busy', 'done',
     'selection-pill', 'source-summary',
     'mic', 'mic-row', 'mic-status', 'mic-name', 'mic-name-label',
-    'cam', 'cam-row', 'cam-status', 'cam-name',
+    'cam', 'cam-row', 'cam-status', 'cam-name', 'cam-name-label',
     'sys', 'sys-row', 'sys-desc',
     'desktop-icons',
     'save-dir-path', 'change-save-dir', 'open-save-dir',
+    'export-dir-path', 'change-export-dir',
     'start', 'stop', 'discard', 'timer', 'marker', 'memo2',
     'library', 'shortcuts-btn', 'memo',
     'doneTitle', 'doneDetail', 'edit', 'reveal', 'again',
@@ -44,6 +45,12 @@ test('recorder.html 包含全部 Bandicam 控制台必需元素 ID', () => {
   const controller = fs.readFileSync(path.join(__dirname, '../src/renderer/recorder.js'), 'utf8');
   assert.match(controller, /\$\('mic-name'\)\?\.addEventListener\('click'/, '点击麦克风选择控件必须打开设备列表');
   assert.match(controller, /audio:\s*\{\s*\.\.\.device\(state\.mic\.deviceId\)/, '录制麦克风必须使用已选择的设备 ID');
+  assert.match(html, /id=["']cam-name["'][^>]*type=["']button["']|type=["']button["'][^>]*id=["']cam-name["']/, '摄像头名称必须是可点击的设备选择器');
+  assert.match(controller, /\$\('cam-name-label'\)\?\.addEventListener\('click'/, '点击摄像头名称必须打开设备菜单');
+  const deviceMenu = controller.slice(controller.indexOf('async function deviceMenu'), controller.indexOf('async function updateDeviceNames'));
+  assert.match(deviceMenu, /if \(kind === 'audioinput'\)[\s\S]*?getUserMedia\(\{ audio: true \}\)/, '麦克风菜单保留授权探测');
+  assert.doesNotMatch(deviceMenu, /getUserMedia\(\{ video: true \}\)/, '摄像头菜单必须先枚举，不能先打开默认设备');
+  assert.match(controller, /status\.requestId !== state\.cam\.requestId/, '过期摄像头状态不能覆盖当前请求');
 });
 
 test('完成通知卡片独立显示缩略图、另存和进入编辑操作', () => {
@@ -64,6 +71,31 @@ test('完成通知卡片独立显示缩略图、另存和进入编辑操作', ()
   assert.match(main, /Math\.floor\(\(area\.height - margin \* 2 \+ gap\) \/ \(height \+ gap\)\)/, '堆叠数量按工作区高度计算');
   assert.match(main, /showRecordingComplete\(completion\)/, '结束录制后必须显示独立完成卡片');
   assert.match(main, /copyProjectToFolder\(source, dialogResult\.filePaths\[0\]\)/, '另存操作必须复制完整项目包');
+});
+
+test('提词器可缩放、摄像头默认右上且停止流程不显示整理界面', () => {
+  const renderer = path.join(__dirname, '../src/renderer');
+  const memo = fs.readFileSync(path.join(renderer, 'memo.html'), 'utf8');
+  const controller = fs.readFileSync(path.join(renderer, 'recorder.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+
+  assert.equal((memo.match(/class=["']resize-handle["']/g) || []).length, 8, '提词器应提供四边和四角缩放把手');
+  assert.match(memo, /ipcRenderer\.send\('memo:resize-start'/, '缩放开始应交给主进程');
+  assert.match(memo, /ipcRenderer\.send\('memo:resize-move'/, '缩放拖动应持续更新窗口尺寸');
+  assert.match(main, /resizable:\s*true/, '提词器窗口应允许缩放');
+  assert.match(main, /win !== memoWindow/, '缩放 IPC 只能控制提词器窗口');
+  assert.match(main, /Math\.max\(minWidth, state\.bounds\.width/, '缩放宽度必须遵守最小值');
+  assert.match(main, /Math\.max\(minHeight, state\.bounds\.height/, '缩放高度必须遵守最小值');
+  assert.match(main, /x:\s*area\.x \+ area\.width - 240 - 36, y:\s*area\.y \+ 36/, '摄像头悬浮窗应默认位于主屏右上角');
+
+  const stopFlow = controller.slice(controller.indexOf('async function stop(discard)'), controller.indexOf('// 录制控制按钮'));
+  const beforeStopInvoke = stopFlow.slice(0, stopFlow.indexOf("ipcRenderer.invoke('recorder:stop'"));
+  assert.match(beforeStopInvoke, /requestCameraPreview\(false, state\.cam\.deviceId\)/, '停止时应关闭摄像头悬浮预览但保留启用偏好');
+  assert.match(beforeStopInvoke, /ipcRenderer\.send\('recorder:close-overlays'\)/, '停止时应关闭提词器等录制悬浮窗');
+  assert.match(beforeStopInvoke, /ipcRenderer\.send\('recorder:hide'\)[\s\S]*?show\('busy'\)/, '整理界面显示前必须隐藏主控台');
+  assert.doesNotMatch(beforeStopInvoke, /state\.session = null;\s*ipcRenderer\.send\('recorder:show'\)/, '停止入口不得无条件重新显示主控台');
+  assert.match(stopFlow, /catch \(error\)[\s\S]*?ipcRenderer\.send\('recorder:show'\)/, '停止失败必须恢复主控台');
+  assert.match(stopFlow, /if \(discard\)[\s\S]*?ipcRenderer\.send\('recorder:show'\)/, '放弃录制必须恢复主控台');
 });
 
 test('主控台图标路径指向实际打包资源', () => {

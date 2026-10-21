@@ -110,7 +110,6 @@ async function runTests() {
     const ipc = createMockIpc();
     const button = createDomElement('button', { id: 'scene-preset' });
     const modal = createDomElement('div', { id: 'modal', hidden: true });
-
     const ui = new PresetsUI({ store, button, modal, ipc });
     await ui.init();
 
@@ -118,6 +117,7 @@ async function runTests() {
     assert.equal(ui.getActivePreset().name, '黑曜石网格', '初始项目应匹配默认预设“黑曜石网格”');
     assert.equal(ui.isModified, false, '初始状态不应标记为已修改');
     assert.equal(button.textContent, '黑曜石网格 ▾', '按钮文字应显示激活预设名称');
+    assert.equal(ipc.calls.filter((call) => call.channel === 'presets:set-default').length, 0, '打开旧项目时不得自动更改新录制默认');
   });
 
   // 3. 应用预设
@@ -127,20 +127,26 @@ async function runTests() {
     const ipc = createMockIpc();
     const button = createDomElement('button', { id: 'scene-preset' });
     const modal = createDomElement('div', { id: 'modal', hidden: true });
+    const messages = [];
 
-    const ui = new PresetsUI({ store, button, modal, ipc });
+    const ui = new PresetsUI({ store, button, modal, ipc, toast: (message) => messages.push(message) });
     await ui.init();
 
     const minimalist = ui.presets.find((p) => p.name === '极简纯色');
     assert.ok(minimalist, '必须存在极简纯色预设');
 
-    ui.applyPreset(minimalist);
+    await ui.applyPreset(minimalist);
 
     assert.equal(store.project.canvas.padding, 60, '应用极简预设后内边距应为 60');
     assert.equal(store.project.camera.shape, 'circle', '应用极简预设后摄像头应为圆形');
     assert.equal(ui.getActivePreset().name, '极简纯色', '激活预设应更新为极简纯色');
     assert.equal(ui.isModified, false, '刚应用预设时修改标记为 false');
     assert.equal(button.textContent, '极简纯色 ▾', '按钮文字应更新为“极简纯色 ▾”');
+    const defaultCalls = ipc.calls.filter((call) => call.channel === 'presets:set-default');
+    assert.equal(defaultCalls.length, 1, '显式应用已保存预设后应记为新录制默认');
+    assert.equal(defaultCalls[0].args[0], minimalist.id);
+    assert.equal(ipc.getPresets().find((preset) => preset.id === minimalist.id).isDefault, true);
+    assert.equal(messages.length, 1, '成功应用并记忆默认预设时只提示一次');
   });
 
   // 4. 修改检测与更新按钮可见性
@@ -164,6 +170,8 @@ async function runTests() {
     });
 
     assert.equal(ui.isModified, true, '外观变动后 isModified 应为 true');
+    assert.equal(ipc.calls.filter((call) => call.channel === 'presets:save').length, 0, '临时外观修改不应自动保存预设');
+    assert.notEqual(ipc.getPresets().find((preset) => preset.id === ui.activePresetId).canvas.padding, 150, '临时修改不能改变已保存预设');
     updateBtn = modal.querySelector('#preset-update-active');
     assert.ok(updateBtn, '修改后弹窗中必须出现“更新此预设”按钮');
     assert.equal(updateBtn.textContent, '更新此预设');
@@ -173,6 +181,36 @@ async function runTests() {
     assert.equal(ui.isModified, false, '恢复后 isModified 应还原为 false');
     updateBtn = modal.querySelector('#preset-update-active');
     assert.equal(updateBtn, null, '恢复后“更新此预设”按钮应消失');
+    assert.equal(ipc.calls.filter((call) => call.channel === 'presets:set-default').length, 0, '临时修改或撤销不得自动更改新录制默认');
+  });
+
+  await asyncTest('默认预设 IPC 失败时仍应用当前项目并明确提示未保存', async () => {
+    const project = model.makeProject({ name: 'Demo', media: { screen: { duration: 10 } }, capture: {} });
+    const store = createMockStore(project);
+    const baseIpc = createMockIpc();
+    const ipc = {
+      calls: baseIpc.calls,
+      getPresets: baseIpc.getPresets,
+      async invoke(channel, ...args) {
+        if (channel === 'presets:set-default') {
+          this.calls.push({ channel, args });
+          throw new Error('模拟 IPC 失败');
+        }
+        return baseIpc.invoke(channel, ...args);
+      },
+    };
+    const messages = [];
+    const ui = new PresetsUI({ store, ipc, toast: (message) => messages.push(message) });
+    await ui.init();
+    const minimalist = ui.presets.find((preset) => preset.name === '极简纯色');
+
+    await ui.applyPreset(minimalist);
+
+    assert.equal(store.project.canvas.padding, 60, '即使默认 IPC 失败，也应应用到当前项目');
+    assert.equal(ipc.getPresets().find((preset) => preset.id === minimalist.id).isDefault, false, '失败后不能在本地伪称已保存');
+    assert.equal(messages.length, 1, '失败时只显示一条结果提示');
+    assert.match(messages[0], /未能保存为新录制默认/);
+    assert.match(messages[0], /模拟 IPC 失败/);
   });
 
   // 5. 更新此预设

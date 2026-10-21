@@ -48,6 +48,19 @@ assert.equal(edit.project.timeline.segments[1].sourceStart, 1);
 assert.equal(edit.project.timeline.segments[1].sourceEnd, 7);
 assert.deepEqual(original.timeline.segments.map((segment) => segment.sourceStart), [0, 10], 'valid batches also edit a clone');
 
+const amplifiedAudio = applyOperations(original, [{
+  type: 'audio',
+  settings: { microphoneVolume: 4, systemVolume: 1 },
+}]);
+assert.equal(amplifiedAudio.project.audio.microphoneVolume, 4, 'Agent 命令可把麦克风设为 400%');
+assert.equal(amplifiedAudio.project.audio.systemVolume, 1, 'Agent 命令的系统声音上限仍为 100%');
+assert.throws(() => applyOperations(original, [{ type: 'audio', settings: { microphoneVolume: 4.01 } }]), codeIs('invalid_params'));
+assert.throws(() => applyOperations(original, [{ type: 'audio', settings: { systemVolume: 1.01 } }]), codeIs('invalid_params'));
+const amplifiedSegment = applyOperations(original, [{
+  type: 'audio', segmentId: 'first', settings: { microphoneVolume: 4 },
+}]);
+assert.equal(amplifiedSegment.project.timeline.segments[0].audio.microphoneVolume, 4, '片段麦克风覆盖同样允许 400%');
+
 const split = applyOperations(original, [{ type: 'split', segmentId: 'first', sourceTime: 4 }]);
 assert.equal(split.project.timeline.segments.length, 3);
 assert.equal(split.project.timeline.segments[0].sourceEnd, 4);

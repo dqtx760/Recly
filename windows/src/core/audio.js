@@ -9,7 +9,7 @@ function resolveAudio(base = {}, overrides = {}) {
     const volumeKey = `${name}Volume`;
     const mutedKey = name === 'system' ? 'isSystemMuted' : 'isMicrophoneMuted';
     const volume = overrides[volumeKey] ?? base[volumeKey] ?? 1;
-    result[volumeKey] = clamp(Number.isFinite(volume) ? volume : 1, 0, 1);
+    result[volumeKey] = clamp(Number.isFinite(volume) ? volume : 1, 0, name === 'microphone' ? 4 : 1);
     result[mutedKey] = overrides[mutedKey] ?? base[mutedKey] ?? false;
   }
   return result;

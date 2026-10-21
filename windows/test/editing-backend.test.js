@@ -12,11 +12,18 @@ const media = require('../src/main/ffmpeg');
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'recly-editing-backend-'));
   const project = makeProject({ name: '编辑验收', media: { screen: { duration: 3, width: 640, height: 360 } }, capture: {} });
+  assert.equal(project.audio.microphoneVolume, 1, '新项目麦克风默认原始音量 100%');
+  assert.equal(project.audio.systemVolume, 0.82, '系统声音默认值保持原样');
+  const legacy = normalizeProject({ ...project, audio: { microphoneVolume: 0.42, systemVolume: 0.73 } });
+  assert.equal(legacy.audio.microphoneVolume, 0.42, '旧项目麦克风音量保存值保留');
+  assert.equal(legacy.audio.systemVolume, 0.73, '旧项目系统声音保存值保留');
   fs.writeFileSync(path.join(directory, 'project.json'), JSON.stringify(project));
   const inherited = resolveAudio({ systemVolume: 0.7, isSystemMuted: true }, { isSystemMuted: false });
   assert.equal(inherited.systemVolume, 0.7);
   assert.equal(inherited.isSystemMuted, false);
   assert.equal(resolveAudio({ microphoneVolume: 0.8 }, { microphoneVolume: 0 }).microphoneVolume, 0);
+  assert.equal(resolveAudio({ microphoneVolume: 4, systemVolume: 4 }).microphoneVolume, 4, '麦克风允许 400%');
+  assert.equal(resolveAudio({ microphoneVolume: 4, systemVolume: 4 }).systemVolume, 1, '系统声音仍限制在 100%');
 
   const bitmap = { isEmpty: () => false, getSize: () => ({ width: 2, height: 3 }), toPNG: () => Buffer.from('fixture-png') };
   const clipboardBytes = Buffer.from('fixture-clipboard-png');
@@ -66,6 +73,38 @@ async function main() {
   assert.ok(rms(0.1, 0.4) > 0.018 && rms(0.1, 0.4) < 0.027, '片段解除全局静音并应用独立音量');
   assert.ok(rms(0.7, 1.3) < 0.0001, '后一片段继续继承全局静音');
   assert.ok(Math.abs((await media.probe(output)).duration - 1.5) < 0.05, '重排与变速后的音频长度');
+
+  const gainOutput = path.join(directory, 'microphone-gain.m4a');
+  const gainSegments = [1, 2, 4].map((microphoneVolume, index) => ({
+    id: `gain-${index}`,
+    sourceStart: 0,
+    sourceEnd: 1,
+    speed: 1,
+    audio: { microphoneVolume, isMicrophoneMuted: false },
+  }));
+  await media.ffmpeg(media.buildMuxArguments({
+    videoFile: null,
+    audioTracks: [{ file: input, kind: 'microphone', offset: 0, baseVolume: 1, baseMuted: false }],
+    segments: gainSegments,
+    sourceDuration: 3,
+    outputDuration: 3,
+    outputFile: gainOutput,
+  }));
+  const gainPcm = path.join(directory, 'microphone-gain.pcm');
+  await media.ffmpeg(['-loglevel', 'error', '-i', gainOutput, '-f', 'f32le', '-ac', '1', '-ar', '48000', gainPcm]);
+  const gainBytes = fs.readFileSync(gainPcm);
+  const gainRms = (start, end) => {
+    let sum = 0;
+    const lo = Math.round(start * 48000), hi = Math.min(Math.round(end * 48000), gainBytes.length / 4);
+    for (let i = lo; i < hi; i++) sum += gainBytes.readFloatLE(i * 4) ** 2;
+    return Math.sqrt(sum / (hi - lo));
+  };
+  const rms100 = gainRms(0.1, 0.9);
+  const rms200 = gainRms(1.1, 1.9);
+  const rms400 = gainRms(2.1, 2.9);
+  assert.ok(rms100 > 0.07 && rms100 < 0.1, `100% 导出 RMS 应接近原始正弦音量，实际 ${rms100}`);
+  assert.ok(Math.abs(rms200 / rms100 - 2) < 0.08, `200% 导出 RMS 应约为 100% 的两倍，实际比例 ${rms200 / rms100}`);
+  assert.ok(Math.abs(rms400 / rms100 - 4) < 0.16, `400% 导出 RMS 应约为 100% 的四倍，实际比例 ${rms400 / rms100}`);
   console.log('编辑后端验收通过：音量覆盖、唯一素材、保存重开、真实 FFmpeg 重排/变速/静音。');
 }
 

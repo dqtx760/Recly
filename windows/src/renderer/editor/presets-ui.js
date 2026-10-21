@@ -325,12 +325,13 @@ class PresetsUI {
   /**
    * 应用选中的预设到当前项目
    */
-  applyPreset(presetOrId) {
+  async applyPreset(presetOrId) {
     const preset = typeof presetOrId === 'string'
       ? this.presets.find((p) => p.id === presetOrId)
       : presetOrId;
 
     if (!preset || !this.store) return;
+    const savedPreset = this.presets.find((item) => item.id === preset.id);
 
     this.activePresetId = preset.id;
     this.isModified = false;
@@ -347,6 +348,25 @@ class PresetsUI {
     if (this.isOpen) {
       this.renderModal();
     }
+
+    if (savedPreset) {
+      try {
+        if (!this.ipc || typeof this.ipc.invoke !== 'function') {
+          throw new Error('无法连接预设存储');
+        }
+        const saved = await this.ipc.invoke('presets:set-default', savedPreset.id);
+        if (saved === false) throw new Error('预设存储未确认默认设置');
+        for (const item of this.presets) {
+          item.isDefault = item.id === savedPreset.id;
+        }
+        this.syncActiveState();
+      } catch (err) {
+        const reason = err && err.message ? `：${err.message}` : '';
+        this.toast(`已应用预设“${preset.name}”，但未能保存为新录制默认${reason}`);
+        return;
+      }
+    }
+
     this.toast(`已应用预设 “${preset.name}”`);
   }
 

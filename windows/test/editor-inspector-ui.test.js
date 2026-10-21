@@ -152,6 +152,11 @@ function createStore() {
         ? this.project.zoomAnimations.find((item) => item.id === this.selection.id) || null
         : null;
     },
+    get selectedSegment() {
+      return this.selection?.type === 'segment'
+        ? this.project.timeline.segments.find((item) => item.id === this.selection.id) || null
+        : null;
+    },
     get selectedScreenMotion() {
       return this.selection?.type === 'screen'
         ? this.project.timeline.screenMotionClips.find((item) => item.id === this.selection.id) || null
@@ -343,6 +348,25 @@ test('requestEffect返回创建Promise供预览添加菜单捕获错误', () => 
   const expected = Promise.resolve('created');
   inspector.timelineView = { onAddEffect: () => expected };
   assert.equal(inspector.requestEffect('mosaic'), expected);
+});
+
+test('声音面板只允许麦克风放大到 400%，系统声音仍封顶 100%', () => {
+  const store = createStore();
+  store.project.media.microphone = { file: 'microphone.wav', duration: 20 };
+  store.project.media.systemAudio = { file: 'system.wav', duration: 20 };
+  store.project.audio.microphoneVolume = 1;
+  const segment = store.project.timeline.segments[0];
+  store.select({ type: 'segment', id: segment.id });
+  const root = new MockElement('div');
+  const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
+  inspector.show('audio');
+
+  const ranges = root.querySelectorAll('input[type="range"]');
+  assert.equal(ranges.length, 4, '应显示全局与片段两组麦克风、系统音量');
+  assert.equal(ranges[0].getAttribute('max'), '4', '全局麦克风滑杆上限为 400%');
+  assert.equal(ranges[1].getAttribute('max'), '1', '全局系统声音滑杆上限为 100%');
+  assert.equal(ranges[2].getAttribute('max'), '4', '片段麦克风滑杆上限为 400%');
+  assert.equal(ranges[3].getAttribute('max'), '1', '片段系统声音滑杆上限为 100%');
 });
 
 Promise.all(pendingTests).then(() => {

@@ -154,7 +154,7 @@ function applyAudio(project, operation) {
   const audio = operation.segmentId ? (target.audio || (target.audio = {})) : (target.audio || (target.audio = {}));
   for (const [key, value] of Object.entries(settings)) {
     if (key.endsWith('Muted')) audio[key] = bool(value, `audio.settings.${key}`);
-    else audio[key] = finite(value, `audio.settings.${key}`, 0, 1);
+    else audio[key] = finite(value, `audio.settings.${key}`, 0, key === 'microphoneVolume' ? 4 : 1);
   }
   return { segmentId: operation.segmentId || null, settings: { ...settings } };
 }

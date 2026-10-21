@@ -197,6 +197,37 @@
     background: rgba(255, 255, 255, 0.2);
     border-radius: 4px;
   }
+  .resize-handle {
+    position: absolute;
+    z-index: 30;
+    -webkit-app-region: no-drag;
+  }
+  .resize-handle[data-edge="n"], .resize-handle[data-edge="s"] {
+    left: 12px;
+    right: 12px;
+    height: 6px;
+  }
+  .resize-handle[data-edge="n"] { top: 0; cursor: ns-resize; }
+  .resize-handle[data-edge="s"] { bottom: 0; cursor: ns-resize; }
+  .resize-handle[data-edge="e"], .resize-handle[data-edge="w"] {
+    top: 12px;
+    bottom: 12px;
+    width: 6px;
+  }
+  .resize-handle[data-edge="e"] { right: 0; cursor: ew-resize; }
+  .resize-handle[data-edge="w"] { left: 0; cursor: ew-resize; }
+  .resize-handle[data-edge="ne"], .resize-handle[data-edge="nw"],
+  .resize-handle[data-edge="se"], .resize-handle[data-edge="sw"] {
+    width: 12px;
+    height: 12px;
+  }
+  .resize-handle[data-edge="ne"] { top: 0; right: 0; cursor: nesw-resize; }
+  .resize-handle[data-edge="nw"] { top: 0; left: 0; cursor: nwse-resize; }
+  .resize-handle[data-edge="se"] { right: 0; bottom: 0; cursor: nwse-resize; }
+  .resize-handle[data-edge="sw"] { left: 0; bottom: 0; cursor: nesw-resize; }
+  @media (max-width: 450px) {
+    .header-title { display: none; }
+  }
 </style>
 <body>
   <div class="prompter" id="prompter">
@@ -224,6 +255,14 @@
       <textarea id="text" placeholder="录制台词、口播文稿写在这里。&#10;&#10;特性：&#10;1. 悬浮置顶，但录制视频中 100% 不入画（完全隐形）；&#10;2. 支持点击上方「▶ 滚屏」匀速自动滚动，也可随时按空格键启停；&#10;3. 可调节字号、速度与透明度；&#10;4. 文稿自动本地保存，重启不丢失。" spellcheck="false"></textarea>
     </div>
   </div>
+  <div class="resize-handle" data-edge="n"></div>
+  <div class="resize-handle" data-edge="s"></div>
+  <div class="resize-handle" data-edge="e"></div>
+  <div class="resize-handle" data-edge="w"></div>
+  <div class="resize-handle" data-edge="ne"></div>
+  <div class="resize-handle" data-edge="nw"></div>
+  <div class="resize-handle" data-edge="se"></div>
+  <div class="resize-handle" data-edge="sw"></div>
 
   <script>
     'use strict';
@@ -252,6 +291,32 @@
     let isScrolling = false;
     let scrollAnimId = null;
     let lastTimestamp = null;
+    let resizeEdge = null;
+    let resizePointerId = null;
+
+    document.querySelectorAll('.resize-handle').forEach((handle) => {
+      handle.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        resizeEdge = handle.dataset.edge;
+        resizePointerId = event.pointerId;
+        handle.setPointerCapture(event.pointerId);
+        ipcRenderer.send('memo:resize-start', { edge: resizeEdge, screenX: event.screenX, screenY: event.screenY });
+      });
+    });
+    window.addEventListener('pointermove', (event) => {
+      if (!resizeEdge || event.pointerId !== resizePointerId) return;
+      ipcRenderer.send('memo:resize-move', { screenX: event.screenX, screenY: event.screenY });
+    });
+    const finishResize = (event) => {
+      if (!resizeEdge || (event.pointerId !== undefined && event.pointerId !== resizePointerId)) return;
+      resizeEdge = null;
+      resizePointerId = null;
+      ipcRenderer.send('memo:resize-end');
+    };
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+    window.addEventListener('blur', finishResize);
 
     const apply = () => {
       textEl.style.fontSize = `${memo.fontSize}px`;

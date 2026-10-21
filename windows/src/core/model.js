@@ -92,6 +92,7 @@ function defaultCamera() {
     scaleDuringZoom: 0.7,
     contentScale: 1,
     contentPosition: { x: 0.5, y: 0.5 },
+    timeOffset: 0,
   };
 }
 
@@ -125,7 +126,7 @@ function defaultMotion() {
 }
 
 function defaultAudio() {
-  return { systemVolume: 0.82, microphoneVolume: 0.9, isSystemMuted: false, isMicrophoneMuted: false };
+  return { systemVolume: 0.82, microphoneVolume: 1, isSystemMuted: false, isMicrophoneMuted: false };
 }
 
 function makeProject({ name, media, capture }) {

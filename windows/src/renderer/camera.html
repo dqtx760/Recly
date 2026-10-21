@@ -14,17 +14,145 @@
     'use strict';
     const { ipcRenderer } = require('electron');
     const video = document.getElementById('video');
+    const NO_FRAME_TIMEOUT_MS = 8000;
+    let generation = 0;
     let stream = null;
-    async function open(deviceId) {
-      if (stream) stream.getTracks().forEach((track) => track.stop());
-      const constraint = deviceId && deviceId !== 'default' ? { deviceId: { exact: deviceId } } : {};
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { ...constraint, width: { ideal: 1280 }, height: { ideal: 720 } } });
-        video.srcObject = stream;
-      } catch { /* 没有摄像头或被占用：保持深色占位 */ }
+    let frameTimer = null;
+    let frameRequest = null;
+    let trackEndListeners = [];
+    let frameConfirmed = false;
+
+    function report(request, status, error = null, message = '') {
+      ipcRenderer.send('camera:status', {
+        requestId: request.requestId,
+        deviceId: request.deviceId || null,
+        status,
+        error,
+        message,
+      });
     }
-    ipcRenderer.on('camera:device', (event, deviceId) => open(deviceId));
-    open(new URLSearchParams(location.search).get('device'));
+
+    function stopStream() {
+      const oldStream = stream;
+      stream = null;
+      if (video.srcObject === oldStream) {
+        video.pause();
+        video.srcObject = null;
+      }
+      if (oldStream) oldStream.getTracks().forEach((track) => track.stop());
+    }
+
+    function clearFrameWait() {
+      if (frameTimer !== null) clearTimeout(frameTimer);
+      frameTimer = null;
+      if (frameRequest) {
+        if (frameRequest.type === 'video-frame') video.cancelVideoFrameCallback(frameRequest.id);
+        else video.removeEventListener('loadeddata', frameRequest.handler);
+      }
+      frameRequest = null;
+    }
+
+    function clearTrackEndListeners() {
+      for (const { track, handler } of trackEndListeners) track.removeEventListener('ended', handler);
+      trackEndListeners = [];
+    }
+
+    function cleanup() {
+      clearFrameWait();
+      clearTrackEndListeners();
+      stopStream();
+    }
+
+    function fail(request, ownGeneration, error, message) {
+      if (ownGeneration !== generation) return;
+      cleanup();
+      report(request, 'error', error, message);
+    }
+
+    function waitForFirstFrame(request, ownGeneration) {
+      let settled = false;
+      const ready = () => {
+        if (settled || ownGeneration !== generation) return;
+        settled = true;
+        frameConfirmed = true;
+        clearFrameWait();
+        report(request, 'ready');
+      };
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        ready();
+        return;
+      }
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        const id = video.requestVideoFrameCallback(() => {
+          frameRequest = null;
+          ready();
+        });
+        frameRequest = { type: 'video-frame', id };
+      } else {
+        const handler = () => {
+          if (video.readyState >= 2 && video.videoWidth > 0) ready();
+        };
+        frameRequest = { type: 'loadeddata', handler };
+        video.addEventListener('loadeddata', handler);
+      }
+    }
+
+    async function open(request) {
+      const ownGeneration = ++generation;
+      cleanup();
+      frameConfirmed = false;
+      report(request, 'checking');
+      frameTimer = setTimeout(() => {
+        if (ownGeneration !== generation || frameConfirmed) return;
+        generation += 1;
+        cleanup();
+        report(request, 'error', 'no_frame', '摄像头未能在限定时间内提供画面');
+      }, NO_FRAME_TIMEOUT_MS);
+      const device = request.deviceId && request.deviceId !== 'default'
+        ? { deviceId: { exact: request.deviceId } }
+        : {};
+      try {
+        const acquired = await navigator.mediaDevices.getUserMedia({
+          video: { ...device, width: { ideal: 1280 }, height: { ideal: 720 } },
+        });
+        if (ownGeneration !== generation) {
+          acquired.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        stream = acquired;
+        video.srcObject = acquired;
+        for (const track of acquired.getVideoTracks()) {
+          const onEnded = () => {
+            if (ownGeneration !== generation || stream !== acquired) return;
+            generation += 1;
+            cleanup();
+            report(request, 'error', 'device_ended', '摄像头已断开或停止提供画面');
+          };
+          track.addEventListener('ended', onEnded);
+          trackEndListeners.push({ track, handler: onEnded });
+        }
+        const playing = video.play();
+        if (playing && typeof playing.catch === 'function') playing.catch(() => {});
+        waitForFirstFrame(request, ownGeneration);
+      } catch (cause) {
+        if (ownGeneration !== generation) return;
+        if (cause && cause.name === 'NotAllowedError') {
+          fail(request, ownGeneration, 'permission_denied', '摄像头权限被拒绝');
+        } else if (cause && cause.name === 'NotFoundError') {
+          fail(request, ownGeneration, 'no_device', '没有找到可用摄像头');
+        } else if (cause && (cause.name === 'NotReadableError' || cause.name === 'TrackStartError')) {
+          fail(request, ownGeneration, 'device_in_use_or_unreadable', '摄像头被占用或无法读取');
+        } else {
+          fail(request, ownGeneration, 'unavailable', '无法读取所选摄像头');
+        }
+      }
+    }
+
+    ipcRenderer.on('camera:device', (event, request) => open(request));
+    window.addEventListener('beforeunload', () => {
+      generation += 1;
+      cleanup();
+    });
   </script>
 </body>
 </html>

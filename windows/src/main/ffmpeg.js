@@ -60,10 +60,12 @@ async function ensurePreview(sourceFile, previewFile) {
   }
   if (previewJobs.has(previewFile)) return previewJobs.get(previewFile);
   const job = (async () => {
-    const temporary = path.join(path.dirname(previewFile), 'screen.preview.partial.mp4');
+    const temporary = path.join(path.dirname(previewFile), 'screen.preview.v3.partial.mp4');
     try {
-      await ffmpeg(['-loglevel', 'error', '-i', sourceFile, '-vf', 'fps=20,scale=1280:-2',
+      // 关键帧每 1 秒一个：默认 x264 的 GOP 会让预览跳转要解码十几秒。
+      await ffmpeg(['-loglevel', 'error', '-i', sourceFile, '-vf', 'fps=60,scale=1280:-2',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '25', '-pix_fmt', 'yuv420p',
+        '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
         '-an', '-movflags', '+faststart', temporary]);
       fs.renameSync(temporary, previewFile);
       return previewFile;

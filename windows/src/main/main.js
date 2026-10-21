@@ -2,6 +2,8 @@
 // DogSC Windows 版主进程：窗口管理、录制调度、项目库与导出混流。
 
 const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShortcut, session, shell, Menu, Tray, clipboard, nativeImage } = require('electron');
+// 当前 Windows 运行环境下硬解视频预览会停帧；关闭视频解码加速，GPU 画布仍保持启用。
+if (process.platform === 'win32') app.commandLine.appendSwitch('disable-accelerated-video-decode');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -38,6 +40,8 @@ const resourcesDirectory = app.isPackaged
 const windowsIconPath = app.isPackaged
   ? path.join(process.resourcesPath, 'AppIconMaster.png')
   : path.join(__dirname, '..', '..', 'assets', 'AppIconMaster.png');
+const MEMO_MIN_WIDTH = 420;
+const MEMO_MIN_HEIGHT = 160;
 // 自测产生的项目放在临时目录，不进用户的项目库。
 const projectsRoot = () => (SELF_TEST ? path.join(app.getPath('temp'), 'dogsc-selftest') : getProjectsRoot());
 
@@ -45,7 +49,9 @@ let tray = null;
 let recorderWindow = null;
 let libraryWindow = null;
 let cameraWindow = null;
+let cameraPreviewRequest = { visible: false, deviceId: null, requestId: 0 };
 let memoWindow = null;
+let memoResizeState = null;
 let windowSourcesCache = null;
 let windowSourcesPending = null;
 const editorWindows = new Map();
@@ -182,7 +188,7 @@ function showRecorder() {
   }
   const area = screen.getPrimaryDisplay().workArea;
   const width = 480;
-  const height = 624;
+  const height = 678;
   recorderWindow = createWindow('recorder.html', {
     width, height,
     useContentSize: true,
@@ -195,6 +201,9 @@ function showRecorder() {
   recorderWindow.setIgnoreMouseEvents(false);
   excludeFromCapture(recorderWindow);
   recorderWindow.once('ready-to-show', () => recorderWindow.show());
+  recorderWindow.on('show', () => {
+    if (!recorderWindow.webContents.isLoading()) recorderWindow.webContents.send('recorder:shown');
+  });
   recorderWindow.on('close', (event) => {
     if (hasRecordingWork()) {
       event.preventDefault();
@@ -338,24 +347,36 @@ async function extractAgentAudio({ directory, project, trackName, sourceStart, s
   }
 }
 
-function toggleCameraPreview(visible, deviceId) {
+function sendCameraDeviceRequest(win) {
+  const request = cameraPreviewRequest;
+  if (!request.visible || !request.requestId || cameraWindow !== win || win.isDestroyed()) return;
+  win.webContents.send('camera:device', { deviceId: request.deviceId, requestId: request.requestId });
+}
+
+function toggleCameraPreview(visible, deviceId, requestId) {
+  cameraPreviewRequest = { visible, deviceId, requestId };
   if (!visible) {
-    if (cameraWindow && !cameraWindow.isDestroyed()) cameraWindow.close();
+    const closingWindow = cameraWindow;
     cameraWindow = null;
+    if (closingWindow && !closingWindow.isDestroyed()) closingWindow.close();
     return;
   }
   if (cameraWindow && !cameraWindow.isDestroyed()) {
-    cameraWindow.webContents.send('camera:device', deviceId);
+    if (!cameraWindow.webContents.isLoading()) sendCameraDeviceRequest(cameraWindow);
     return;
   }
   const area = screen.getPrimaryDisplay().workArea;
-  cameraWindow = createWindow('camera.html', {
-    width: 240, height: 240, x: area.x + 36, y: area.y + area.height - 240 - 36,
+  const newCameraWindow = createWindow('camera.html', {
+    width: 240, height: 240, x: area.x + area.width - 240 - 36, y: area.y + 36,
     frame: false, transparent: true, resizable: false, skipTaskbar: true, hasShadow: false, focusable: false,
-  }, { device: deviceId || '' });
-  excludeFromCapture(cameraWindow, true);
-  cameraWindow.once('ready-to-show', () => cameraWindow.showInactive());
-  cameraWindow.on('closed', () => { cameraWindow = null; });
+  });
+  cameraWindow = newCameraWindow;
+  excludeFromCapture(newCameraWindow, true);
+  newCameraWindow.once('ready-to-show', () => newCameraWindow.showInactive());
+  newCameraWindow.webContents.once('did-finish-load', () => sendCameraDeviceRequest(newCameraWindow));
+  newCameraWindow.on('closed', () => {
+    if (cameraWindow === newCameraWindow) cameraWindow = null;
+  });
 }
 
 function toggleMemo() {
@@ -365,12 +386,58 @@ function toggleMemo() {
   }
   const area = screen.getPrimaryDisplay().workArea;
   memoWindow = createWindow('memo.html', {
-    width: 480, height: 300, minWidth: 420, minHeight: 160, x: area.x + area.width - 480 - 36, y: area.y + 80,
-    frame: false, transparent: true, resizable: false, skipTaskbar: true, hasShadow: false,
+    width: 480, height: 300, minWidth: MEMO_MIN_WIDTH, minHeight: MEMO_MIN_HEIGHT, x: area.x + area.width - 480 - 36, y: area.y + 80,
+    frame: false, transparent: true, resizable: true, skipTaskbar: true, hasShadow: false,
   }, { store: path.join(app.getPath('userData'), 'memo.json') });
   excludeFromCapture(memoWindow, true);
   memoWindow.once('ready-to-show', () => memoWindow.show());
-  memoWindow.on('closed', () => { memoWindow = null; });
+  memoWindow.on('closed', () => {
+    memoWindow = null;
+    memoResizeState = null;
+  });
+}
+
+function closeRecordingOverlays() {
+  toggleCameraPreview(false, cameraPreviewRequest.deviceId, cameraPreviewRequest.requestId);
+  const closingMemo = memoWindow;
+  memoWindow = null;
+  memoResizeState = null;
+  if (closingMemo && !closingMemo.isDestroyed()) closingMemo.close();
+}
+
+function beginMemoResize(event, payload = {}) {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const edge = String(payload.edge || '');
+  if (!win || win !== memoWindow || !/^(n|s|e|w|ne|nw|se|sw)$/.test(edge)) return;
+  memoResizeState = {
+    win,
+    edge,
+    startX: Number(payload.screenX) || 0,
+    startY: Number(payload.screenY) || 0,
+    bounds: win.getBounds(),
+  };
+}
+
+function updateMemoResize(event, payload = {}) {
+  const state = memoResizeState;
+  if (!state || state.win.isDestroyed() || event.sender !== state.win.webContents) return;
+  const deltaX = (Number(payload.screenX) || 0) - state.startX;
+  const deltaY = (Number(payload.screenY) || 0) - state.startY;
+  const next = { ...state.bounds };
+  const minWidth = MEMO_MIN_WIDTH;
+  const minHeight = MEMO_MIN_HEIGHT;
+
+  if (state.edge.includes('e')) next.width = Math.max(minWidth, state.bounds.width + deltaX);
+  if (state.edge.includes('s')) next.height = Math.max(minHeight, state.bounds.height + deltaY);
+  if (state.edge.includes('w')) {
+    next.width = Math.max(minWidth, state.bounds.width - deltaX);
+    next.x = state.bounds.x + state.bounds.width - next.width;
+  }
+  if (state.edge.includes('n')) {
+    next.height = Math.max(minHeight, state.bounds.height - deltaY);
+    next.y = state.bounds.y + state.bounds.height - next.height;
+  }
+  state.win.setBounds(next, false);
 }
 
 /// 全屏半透明遮罩上拖出录制区域，返回所在显示器与物理像素矩形。
@@ -740,6 +807,8 @@ function registerIpc() {
     const sessionState = recording;
     recording = null;
     finishingRecording = sessionState;
+    closeRecordingOverlays();
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.hide();
     let result;
     let finishInvoked = false;
     try {
@@ -801,6 +870,7 @@ function registerIpc() {
     if (recording === sessionState) recording = null;
     if (preparing === sessionState) preparing = null;
     finishingRecording = sessionState;
+    closeRecordingOverlays();
     try {
       try { updateTrayState(); } catch (error) {
         console.warn('[DogSC] 更新录制托盘状态失败：', error.message || error);
@@ -814,6 +884,7 @@ function registerIpc() {
       finishingRecording = null;
       setCompletionWindowsVisible(true);
       updateTrayState();
+      showRecorder();
     }
   });
 
@@ -828,8 +899,19 @@ function registerIpc() {
     await completionThumbnailPromises.get(source);
     return copyProjectToFolder(source, dialogResult.filePaths[0]);
   });
-  ipcMain.on('recorder:camera-preview', (event, { visible, deviceId }) => toggleCameraPreview(visible, deviceId));
+  ipcMain.on('recorder:camera-preview', (event, { visible, deviceId, requestId }) => toggleCameraPreview(visible, deviceId, requestId));
+  ipcMain.on('camera:status', (event, status) => {
+    if (!status || !cameraWindow || cameraWindow.isDestroyed()) return;
+    if (event.sender !== cameraWindow.webContents || status.requestId !== cameraPreviewRequest.requestId || !cameraPreviewRequest.visible) return;
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.webContents.send('camera:status', status);
+  });
   ipcMain.on('recorder:memo', () => toggleMemo());
+  ipcMain.on('recorder:close-overlays', closeRecordingOverlays);
+  ipcMain.on('memo:resize-start', beginMemoResize);
+  ipcMain.on('memo:resize-move', updateMemoResize);
+  ipcMain.on('memo:resize-end', (event) => {
+    if (memoResizeState && event.sender === memoResizeState.win.webContents) memoResizeState = null;
+  });
   ipcMain.on('recorder:library', () => showLibrary());
   ipcMain.on('recorder:show', () => showRecorder());
   ipcMain.on('recorder:hide', () => {
@@ -855,7 +937,7 @@ function registerIpc() {
     const source = project.media.screen;
     const sourceFile = path.join(directory, source.file);
     if (source.width <= 1280 && source.frameRate <= 20) return sourceFile;
-    return media.ensurePreview(sourceFile, path.join(directory, 'media', 'screen.preview.mp4'));
+    return media.ensurePreview(sourceFile, path.join(directory, 'media', 'screen.preview.v3.mp4'));
   });
   ipcMain.handle('project:write', (event, { directory, project }) => {
     // 缩略图在录制完成后后台生成；编辑器先保存时不能把已生成的封面覆盖掉。

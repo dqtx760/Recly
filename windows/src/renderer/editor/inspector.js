@@ -14,8 +14,8 @@ const { renderSubtitlesPanel } = require('./subtitles-panel');
 
 const TABS = [
   { id: 'canvas', label: '画面', icon: 'canvas' },
-  { id: 'motion', label: '运镜', icon: 'motion' },
   { id: 'opening', label: '开场', icon: 'wand' },
+  { id: 'motion', label: '运镜', icon: 'motion' },
   { id: 'cursor', label: '光标', icon: 'cursor' },
   { id: 'camera', label: '摄像头', icon: 'camera' },
   { id: 'audio', label: '声音', icon: 'speaker' },
@@ -754,7 +754,7 @@ class Inspector {
   cameraPanel() {
     const { project } = this.store;
     const camera = project.camera;
-    if (!project.media.camera) return [this.section('摄像头', element('p', { class: 'note' }, '这次录制没有开摄像头。在录制条上打开摄像头后再录，摄像头画面会作为单独一轨进入项目。'))];
+    if (!project.media.camera) return [this.section('摄像头', element('p', { class: 'note' }, '这次录制未开启摄像头。在录制主控台开启摄像头开关后再开始录制，摄像头画面将作为画中画图层进入工程。'))];
     const cameraMotion = this.store.selectedCameraMotion;
     const sections = [];
     if (cameraMotion) {
@@ -776,6 +776,23 @@ class Inspector {
       this.section('显示',
         this.toggle('显示摄像头', () => !camera.isHidden, (on) => { camera.isHidden = !on; }),
         this.toggle('镜像', () => camera.isMirrored, (on) => { camera.isMirrored = on; })),
+      this.section('音画同步校准',
+        element('p', { class: 'note' }, '摄像头画面若比声音动作滞后（无线/网络摄像头延时）或超前时在此校准。负值让画面提前，正值让画面延后。'),
+        this.slider('音画同步', () => camera.timeOffset ?? 0, (value) => { camera.timeOffset = value; }, {
+          min: -5, max: 5, step: 0.05,
+          format: (value) => `${value > 0 ? '+' : ''}${value.toFixed(2)} 秒`,
+        }),
+        this.chips({
+          'reset': '重置 (0s)',
+          'sync-1s': '提前 1 秒 (-1s)',
+          'sync-2s': '提前 2 秒 (-2s)',
+          'sync-3s': '提前 3 秒 (-3s)',
+        }, () => '', (value) => {
+          if (value === 'reset') camera.timeOffset = 0;
+          else if (value === 'sync-1s') camera.timeOffset = -1.0;
+          else if (value === 'sync-2s') camera.timeOffset = -2.0;
+          else if (value === 'sync-3s') camera.timeOffset = -3.0;
+        })),
       this.section('形状与大小',
         this.chips(Object.fromEntries(Object.entries(CAMERA_SHAPES).map(([id, shape]) => [id, shape.label])), () => camera.shape, (value) => { camera.shape = value; }),
         this.slider('大小', () => camera.size, (value) => { camera.size = value; }, { min: 0.1, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` }),
@@ -804,13 +821,13 @@ class Inspector {
     const { project } = this.store;
     const audio = project.audio;
     const percent = (value) => `${Math.round(value * 100)}%`;
-    const track = (title, present, mutedKey, volumeKey, missing) => this.section(title, ...(present ? [
+    const track = (title, present, mutedKey, volumeKey, missing, maxVolume) => this.section(title, ...(present ? [
       this.toggle('静音', () => audio[mutedKey], (on) => { audio[mutedKey] = on; }),
-      this.slider('音量', () => audio[volumeKey], (value) => { audio[volumeKey] = value; }, { min: 0, max: 1, step: 0.01, format: percent }),
+      this.slider('音量', () => audio[volumeKey], (value) => { audio[volumeKey] = value; }, { min: 0, max: maxVolume, step: 0.01, format: percent }),
     ] : [element('p', { class: 'note' }, missing)]));
     const sections = [
-      track('麦克风', project.media.microphone, 'isMicrophoneMuted', 'microphoneVolume', '这次录制没有录麦克风。'),
-      track('系统声音', project.media.systemAudio, 'isSystemMuted', 'systemVolume', '这次录制没有录系统声音。'),
+      track('麦克风', project.media.microphone, 'isMicrophoneMuted', 'microphoneVolume', '这次录制没有录麦克风。', 4),
+      track('系统声音', project.media.systemAudio, 'isSystemMuted', 'systemVolume', '这次录制没有录系统声音。', 1),
     ];
     const segment = this.store.selectedSegment;
     if (segment) {
@@ -835,7 +852,7 @@ class Inspector {
           element('b', {}, '麦克风'),
           status(['microphoneVolume', 'isMicrophoneMuted']),
           this.toggle('静音', () => Boolean(effective('isMicrophoneMuted')), (on) => writeOverride('isMicrophoneMuted', on)),
-          this.slider('音量', () => effective('microphoneVolume'), (value) => writeOverride('microphoneVolume', value), { min: 0, max: 1, step: 0.01, format: percent })) : null,
+          this.slider('音量', () => effective('microphoneVolume'), (value) => writeOverride('microphoneVolume', value), { min: 0, max: 4, step: 0.01, format: percent })) : null,
         project.media.systemAudio ? element('div', { class: 'audio-override' },
           element('b', {}, '系统声音'),
           status(['systemVolume', 'isSystemMuted']),

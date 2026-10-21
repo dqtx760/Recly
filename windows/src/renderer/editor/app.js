@@ -399,7 +399,7 @@ async function main() {
   store.subscribe(refreshChrome);
   preview.onState = () => { $('play').innerHTML = icon(preview.playing ? 'pause' : 'play'); };
   preview.onStatus = (status) => { $('preview-status').textContent = status; };
-  preview.onStatus(preview.status);
+  preview.reportStatus();
   preview.onTime = (time) => {
     $('clock-now').textContent = formatTime(time);
     timelineView.updatePlayhead();

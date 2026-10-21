@@ -10,6 +10,8 @@ const { createDesktopIconsController } = require('./win32');
 const { makeProject, uid } = require('../core/model');
 const { planAutoZoom } = require('../core/zoom');
 const { isInside } = require('../core/pointer');
+const { applyPresetToProject } = require('../core/presets');
+const { getPresetStore } = require('./presets');
 
 const PROJECT_EXTENSION = '.dogscproject';
 
@@ -227,7 +229,13 @@ class RecordingSession {
     fs.writeFileSync(inMedia('pointer.json'), JSON.stringify({ hasClicks: this.pointer.hasClickSupport, events }));
     projectMedia.pointer = 'media/pointer.json';
 
-    const project = makeProject({ name: path.basename(this.directory, PROJECT_EXTENSION), media: projectMedia, capture: this.source.description });
+    let project = makeProject({ name: path.basename(this.directory, PROJECT_EXTENSION), media: projectMedia, capture: this.source.description });
+    try {
+      const preset = getPresetStore().getDefault();
+      if (preset) project = applyPresetToProject(preset, project);
+    } catch (error) {
+      console.warn('[DogSC] 应用新录制默认场景预设失败，使用基础项目：', error.message || error);
+    }
     project.zoomAnimations = planAutoZoom(events.filter(isInside), {
       zoomScale: project.motion.defaultZoomScale,
       easing: project.motion.defaultZoomEasing,
@@ -251,6 +259,12 @@ class RecordingSession {
         console.warn('[DogSC] 缩略图生成失败：', error.message || error);
         return false;
       });
+    // 编辑器打开后立刻就能播放；准备代理期间若直接放原始 1440p60 素材，画面会落后声音。
+    // 录制结束即后台生成与 project:preview 相同的代理，编辑器打开时直接命中。
+    if (projectMedia.screen.width > 1280 || projectMedia.screen.frameRate > 20) {
+      media.ensurePreview(inMedia('screen.mp4'), inMedia('screen.preview.v3.mp4'))
+        .catch((error) => console.warn('[DogSC] 流畅预览生成失败：', error.message || error));
+    }
     return { directory: this.directory, project, thumbnailsReady };
   }
 }
