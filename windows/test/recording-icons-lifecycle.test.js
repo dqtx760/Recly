@@ -69,6 +69,7 @@ async function run() {
   const previousRemuxToMp4 = media.remuxToMp4;
   const previousProbe = media.probe;
   const previousBuildVideoIndex = media.buildVideoIndex;
+  const previousFinalizeAudio = media.finalizeAudio;
   const previousMakeThumbnails = media.makeThumbnails;
   const previousEnsurePreview = media.ensurePreview;
   const previousRmSync = fs.rmSync;
@@ -90,6 +91,10 @@ async function run() {
     media.remuxToMp4 = async (_source, target) => fs.writeFileSync(target, 'synthetic video');
     media.probe = async () => ({ duration: 4, video: { width: 1920, height: 1080 } });
     media.buildVideoIndex = async () => ({ frames: [] });
+    media.finalizeAudio = async (_source, target) => {
+      fs.writeFileSync(target, 'synthetic audio');
+      return { duration: 6 };
+    };
     media.makeThumbnails = async () => ({ file: 'thumbnails.jpg' });
     media.ensurePreview = async () => {};
 
@@ -158,10 +163,34 @@ async function run() {
       assert.equal(result.project.media.screen.file, 'media/screen.mp4');
       assert.equal(result.project.media.pointer, 'media/pointer.json');
       assert.equal(result.project.timeline.segments.length, 1);
+      assert.equal(result.project.timeline.segments[0].sourceStart, 0, '未提交正式起点的旧调用保持从原素材0秒开始');
       assert.deepEqual(result.project.markers, [{ id: 'kept', time: 1 }]);
       assert.equal(result.project.export.frameRate, 30);
       const savedProject = JSON.parse(fs.readFileSync(path.join(result.directory, 'project.json'), 'utf8'));
       assert.equal(savedProject.canvas.padding, 37, '应用后的项目外观应写入新项目文件');
+    });
+
+    await test('正式起点只提交一次并从默认成片排除准备时间，音轨偏移保持真实时钟差', async () => {
+      const session = makeFinishSession('official-start-trim-finish');
+      session.pointer.stop = () => [
+        { time: 100.5, x: 0.5, y: 0.5, kind: 'leftClick' },
+        { time: 103, x: 0.5, y: 0.5, kind: 'leftClick' },
+      ];
+      session.markers = [{ id: 'pre-roll', time: 1 }, { id: 'kept', time: 3 }];
+      assert.equal(session.commitStart(102), 2);
+      assert.equal(session.commitStart(103), 2, '重复提交不得移动正式起点');
+      const microphoneRaw = path.join(session.mediaDirectory, 'microphone-raw.webm');
+      fs.writeFileSync(microphoneRaw, Buffer.alloc(1024));
+
+      const result = await session.finish([{ kind: 'microphone', file: microphoneRaw, startedAt: 99, hasAudio: true }]);
+      await result.thumbnailsReady;
+
+      assert.equal(result.project.timeline.segments[0].sourceStart, 2);
+      assert.equal(result.project.timeline.segments[0].sourceEnd, 4);
+      assert.equal(result.outputDuration, 2);
+      assert.equal(result.project.media.microphone.offset, -1, '音轨偏移仍使用 startedAt-firstFrameTime');
+      assert.deepEqual(result.project.markers, [{ id: 'kept', time: 3 }]);
+      assert.equal(result.project.zoomAnimations.length, 1, '正式起点前的点击不得生成自动运镜');
     });
 
     await test('默认预设读取异常仍创建基础录制项目', async () => {
@@ -198,6 +227,7 @@ async function run() {
     media.remuxToMp4 = previousRemuxToMp4;
     media.probe = previousProbe;
     media.buildVideoIndex = previousBuildVideoIndex;
+    media.finalizeAudio = previousFinalizeAudio;
     media.makeThumbnails = previousMakeThumbnails;
     media.ensurePreview = previousEnsurePreview;
     fs.rmSync = previousRmSync;

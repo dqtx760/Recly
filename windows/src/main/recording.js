@@ -11,6 +11,7 @@ const { makeProject, uid } = require('../core/model');
 const { planAutoZoom } = require('../core/zoom');
 const { isInside } = require('../core/pointer');
 const { applyPresetToProject } = require('../core/presets');
+const { outputDuration } = require('../core/timeline');
 const { getPresetStore } = require('./presets');
 
 const PROJECT_EXTENSION = '.dogscproject';
@@ -98,6 +99,8 @@ class RecordingSession {
     this.mediaDirectory = path.join(this.directory, 'media');
     this.markers = [];
     this.firstFrameTime = null;
+    this.officialStartOffset = 0;
+    this.officialStartCommitted = false;
   }
 
   async start() {
@@ -136,6 +139,15 @@ class RecordingSession {
     const marker = { id: uid(), time: Date.now() / 1000 - this.firstFrameTime };
     this.markers.push(marker);
     return marker;
+  }
+
+  commitStart(now = Date.now() / 1000) {
+    if (this.firstFrameTime === null) throw new Error('屏幕首帧尚未就绪');
+    if (!this.officialStartCommitted) {
+      this.officialStartOffset = Math.max(0, now - this.firstFrameTime);
+      this.officialStartCommitted = true;
+    }
+    return this.officialStartOffset;
   }
 
   async discard() {
@@ -236,13 +248,20 @@ class RecordingSession {
     } catch (error) {
       console.warn('[DogSC] 应用新录制默认场景预设失败，使用基础项目：', error.message || error);
     }
-    project.zoomAnimations = planAutoZoom(events.filter(isInside), {
+    const frameDuration = 1 / Math.max(1, this.frameRate);
+    const officialStart = Math.min(
+      Math.max(0, this.officialStartOffset || 0),
+      Math.max(0, duration - frameDuration),
+    );
+    project.timeline.segments[0].sourceStart = officialStart;
+    const officialEvents = events.filter((event) => event.time >= officialStart);
+    project.zoomAnimations = planAutoZoom(officialEvents.filter(isInside), {
       zoomScale: project.motion.defaultZoomScale,
       easing: project.motion.defaultZoomEasing,
       transitionDuration: project.motion.defaultZoomTransitionDuration,
       duration,
     });
-    project.markers = this.markers.filter((marker) => marker.time >= 0 && marker.time <= duration);
+    project.markers = this.markers.filter((marker) => marker.time >= officialStart && marker.time <= duration);
     project.export.frameRate = this.frameRate >= 60 ? 60 : 30;
     fs.writeFileSync(path.join(this.directory, 'project.json'), JSON.stringify(project, null, 2));
     fs.rmSync(raw, { force: true });
@@ -265,7 +284,7 @@ class RecordingSession {
       media.ensurePreview(inMedia('screen.mp4'), inMedia('screen.preview.v3.mp4'))
         .catch((error) => console.warn('[DogSC] 流畅预览生成失败：', error.message || error));
     }
-    return { directory: this.directory, project, thumbnailsReady };
+    return { directory: this.directory, project, outputDuration: outputDuration(project.timeline.segments), thumbnailsReady };
   }
 }
 

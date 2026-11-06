@@ -117,6 +117,15 @@ test('场景布局：默认留白与阴影', () => {
   assert.equal(large.camera, null);
 });
 
+test('旧工程规范化补齐摄像头布局并保留片段形状覆盖', () => {
+  const project = model.makeProject({ name: 'old', media: { screen: { duration: 4, width: 1920, height: 1080 } }, capture: {} });
+  delete project.camera.layout;
+  project.timeline.segments[0].camera = { layout: 'fullscreen', shape: 'circle' };
+  const normalized = model.normalizeProject(JSON.parse(JSON.stringify(project)));
+  assert.equal(normalized.camera.layout, 'shape');
+  assert.deepEqual(normalized.timeline.segments[0].camera, { layout: 'fullscreen', shape: 'circle' });
+});
+
 test('场景布局：零留白时缩放不露出画布边缘', () => {
   const project = model.makeProject({ name: 't', media: { screen: { duration: 10, width: 1920, height: 1080 } }, capture: {} });
   project.canvas.padding = 0;

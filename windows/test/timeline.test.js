@@ -87,6 +87,18 @@ test('splitting keeps independent copies of a segment audio override', () => {
   assert.equal(split[1].audio.microphoneVolume, 0.3);
 });
 
+test('splitting keeps independent copies of a segment camera shape override', () => {
+  const segment = {
+    id: 'with-camera', sourceStart: 0, sourceEnd: 4, speed: 1,
+    camera: { layout: 'shape', shape: 'vertical' },
+  };
+  const split = timeline.splitAt([segment], 2);
+  assert.deepEqual(split[0].camera, segment.camera);
+  assert.deepEqual(split[1].camera, segment.camera);
+  split[0].camera.shape = 'circle';
+  assert.equal(split[1].camera.shape, 'vertical');
+});
+
 test('trim constraints follow source ranges after segment reordering', () => {
   const segments = [
     { id: 'later', sourceStart: 8, sourceEnd: 10, speed: 1 },

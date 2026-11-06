@@ -677,6 +677,16 @@ button:focus-visible {
   pointer-events: none;
 }
 
+.btn-rec.is-recording .rec-dot {
+  width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 3px;
+  background: #fff;
+}
+
+#timer { font-variant-numeric: tabular-nums; }
+
 .btn-rec:hover:not(:disabled) {
   filter: brightness(1.04) saturate(1.06);
   transform: translateY(-1px);
@@ -765,104 +775,7 @@ button:focus-visible {
   .btn-rec { height: 50px; border-radius: 18px; }
 }
 
-/* ================= 状态面板：录制中 (#live) ================= */
-#live {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  height: 100%;
-  padding: 10px 0;
-}
-
-.live-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 24px 16px;
-  border-radius: 16px;
-  background: #FDFEFE;
-  border: 1px solid var(--rec-card-border);
-  gap: 10px;
-}
-
-.live-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.pulse-dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--rec-red);
-  box-shadow: 0 0 0 rgba(224, 36, 36, 0.4);
-  animation: pulse-ring 1.4s infinite;
-}
-
-@keyframes pulse-ring {
-  0% {
-    box-shadow: 0 0 0 0 rgba(224, 36, 36, 0.6);
-  }
-  70% {
-    box-shadow: 0 0 0 10px rgba(224, 36, 36, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(224, 36, 36, 0);
-  }
-}
-
-.timer {
-  font: 700 36px/1 "Cascadia Mono", Consolas, monospace;
-  letter-spacing: 1px;
-  color: var(--ink);
-}
-
-.live-status-text {
-  text-align: center;
-}
-
-.live-status-text b {
-  font-size: 14px;
-  display: block;
-  color: var(--ink);
-}
-
-.live-status-text small {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.live-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.live-stop-btn {
-  width: 100%;
-  height: 48px;
-  border-radius: 24px;
-  background: var(--ink);
-  color: #FFFFFF;
-  font-size: 15px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  cursor: pointer;
-  transition: all 0.15s;
-  border: none;
-}
-
-.live-stop-btn:hover {
-  background: #2E2E31;
-}
-
+/* ================= 状态面板：正在准备 (#preparing) ================= */
 /* ================= 状态面板：整理素材 (#busy) ================= */
 #busy {
   display: flex;

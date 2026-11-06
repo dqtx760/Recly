@@ -25,7 +25,7 @@ console.log('Testing Bandicam Recorder UI Controller (recorder.js)...');
 test('recorder.html 包含全部 Bandicam 控制台必需元素 ID', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/recorder.html'), 'utf8');
   const requiredIds = [
-    'win-min', 'win-close', 'idle', 'live', 'busy', 'done',
+    'win-min', 'win-close', 'idle', 'busy', 'done',
     'selection-pill', 'source-summary',
     'mic', 'mic-row', 'mic-status', 'mic-name', 'mic-name-label',
     'cam', 'cam-row', 'cam-status', 'cam-name', 'cam-name-label',
@@ -33,7 +33,7 @@ test('recorder.html 包含全部 Bandicam 控制台必需元素 ID', () => {
     'desktop-icons',
     'save-dir-path', 'change-save-dir', 'open-save-dir',
     'export-dir-path', 'change-export-dir',
-    'start', 'stop', 'discard', 'timer', 'marker', 'memo2',
+    'start', 'discard', 'timer', 'marker',
     'library', 'shortcuts-btn', 'memo',
     'doneTitle', 'doneDetail', 'edit', 'reveal', 'again',
     'shortcuts-modal', 'shortcuts-close'
@@ -174,7 +174,6 @@ asyncTest('recorder.js 控制台事件绑定与状态流转', async () => {
   const winMin = getOrCreate('win-min', 'button');
   const winClose = getOrCreate('win-close', 'button');
   const startBtn = getOrCreate('start', 'button');
-  const stopBtn = getOrCreate('stop', 'button');
   const discardBtn = getOrCreate('discard', 'button');
   const markerBtn = getOrCreate('marker', 'button');
   const markerSpan = new MockElement('span');
@@ -209,7 +208,6 @@ asyncTest('recorder.js 控制台事件绑定与状态流转', async () => {
   const shortcutsClose = getOrCreate('shortcuts-close', 'button');
 
   const idlePanel = getOrCreate('idle', 'div');
-  const livePanel = getOrCreate('live', 'div');
   const busyPanel = getOrCreate('busy', 'div');
   const donePanel = getOrCreate('done', 'div');
 

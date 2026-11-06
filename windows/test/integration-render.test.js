@@ -275,6 +275,68 @@ test('camera motion: adjacent transitions join without a boundary reset', () => 
   near(resolveCameraState({ layout: { kind: 'shape', shape: 'vertical' } }).aspectRatio, 0.72);
 });
 
+test('camera shape: global fullscreen fills every canvas aspect', () => {
+  const project = model.makeProject({ name: 'Global Fullscreen', media: { screen: { duration: 6, width: 1920, height: 1080 }, camera: { width: 1280, height: 720 } }, capture: {} });
+  project.camera.layout = 'fullscreen';
+  for (const [width, height] of [[1920, 1080], [1080, 1920], [1000, 1000]]) {
+    const evaluated = scene.evaluateScene(project, { time: 1, outputTime: 1, width, height, sourceAspect: 16 / 9, cameraAspect: 16 / 9 });
+    assert.deepEqual(evaluated.camera.rect, { x: 0, y: 0, width, height });
+    assert.equal(evaluated.camera.fullscreenProgress, 1);
+  }
+});
+
+test('camera shape: only the selected middle segment becomes fullscreen', () => {
+  const project = model.makeProject({ name: 'Middle Fullscreen', media: { screen: { duration: 9, width: 1920, height: 1080 }, camera: { width: 1280, height: 720 } }, capture: {} });
+  project.timeline.segments = [
+    { id: 'left', sourceStart: 0, sourceEnd: 3, speed: 1 },
+    { id: 'middle', sourceStart: 3, sourceEnd: 6, speed: 1, camera: { layout: 'fullscreen', shape: 'square' } },
+    { id: 'right', sourceStart: 6, sourceEnd: 9, speed: 1 },
+  ];
+  const sample = (time) => scene.evaluateScene(project, { time, outputTime: time, width: 1920, height: 1080, sourceAspect: 16 / 9, cameraAspect: 16 / 9 }).camera;
+  assert.equal(sample(1).fullscreenProgress, 0);
+  assert.equal(sample(4).fullscreenProgress, 1);
+  assert.equal(sample(7).fullscreenProgress, 0);
+});
+
+test('camera shape: source-time fallback keeps the true maximum endpoint after reordering', () => {
+  const project = model.makeProject({ name: 'Source Endpoint', media: { screen: { duration: 9, width: 1920, height: 1080 }, camera: { width: 1280, height: 720 } }, capture: {} });
+  project.timeline.segments = [
+    { id: 'early-in-output', sourceStart: 6, sourceEnd: 9, speed: 1, camera: { layout: 'shape', shape: 'vertical' } },
+    { id: 'late-in-output', sourceStart: 0, sourceEnd: 3, speed: 1 },
+  ];
+  const evaluated = scene.evaluateScene(project, { time: 9, width: 1920, height: 1080, sourceAspect: 16 / 9, cameraAspect: 16 / 9 });
+  near(evaluated.camera.rect.width / evaluated.camera.rect.height, 0.72, 1e-6);
+});
+
+test('camera shape: selected timeline segment override follows output order and wins over motion layout', () => {
+  const project = model.makeProject({ name: 'Per Segment Camera', media: { screen: { duration: 9, width: 1920, height: 1080 }, camera: { width: 1280, height: 720 } }, capture: {} });
+  project.camera.layout = 'shape';
+  project.camera.shape = 'square';
+  project.timeline.segments = [
+    { id: 'later', sourceStart: 6, sourceEnd: 9, speed: 1 },
+    { id: 'middle', sourceStart: 0, sourceEnd: 3, speed: 1, camera: { layout: 'fullscreen', shape: 'circle' } },
+    { id: 'repeated', sourceStart: 0, sourceEnd: 3, speed: 1, camera: { layout: 'shape', shape: 'vertical' } },
+  ];
+  project.timeline.cameraMotionClips = [new CameraMotionClip({
+    id: 'motion-fullscreen', timing: { startTime: 0, duration: 9, leadInDuration: 0 },
+    target: { layout: 'fullscreen', shape: 'horizontal', position: { x: 0.2, y: 0.3 }, size: 0.4, opacity: 0.42 },
+  })];
+
+  const first = scene.evaluateScene(project, { time: 6.5, outputTime: 0.5, width: 1920, height: 1080, sourceAspect: 16 / 9, cameraAspect: 16 / 9 });
+  assert.equal(first.camera.fullscreenProgress, 1, '无片段覆盖时保留素材时间上的摄像头动效');
+  const middle = scene.evaluateScene(project, { time: 0.5, outputTime: 3.5, width: 1920, height: 1080, sourceAspect: 16 / 9, cameraAspect: 16 / 9 });
+  assert.deepEqual(middle.camera.rect, { x: 0, y: 0, width: 1920, height: 1080 });
+  const repeated = scene.evaluateScene(project, { time: 0.5, outputTime: 6.5, width: 1920, height: 1080, sourceAspect: 16 / 9, cameraAspect: 16 / 9 });
+  near(repeated.camera.rect.width / repeated.camera.rect.height, 0.72, 1e-6, '重复素材按输出片段使用纵向覆盖');
+  assert.equal(repeated.camera.fullscreenProgress, 0, '片段形状覆盖优先于旧的全屏动效');
+  near(repeated.camera.rect.height, 1080 * 0.4, 1e-6, '片段形状覆盖保留动效大小');
+  near(repeated.camera.rect.x, 0.2 * (1920 - 1080 * 0.4 * 0.72), 1e-6, '片段形状覆盖保留动效水平位置');
+  near(repeated.camera.rect.y, 0.3 * (1080 - 1080 * 0.4), 1e-6, '片段形状覆盖保留动效垂直位置');
+  near(repeated.camera.opacity, 0.42, 1e-6, '片段形状覆盖保留动效透明度');
+  const boundary = scene.evaluateScene(project, { time: 0, outputTime: 6, width: 1920, height: 1080, sourceAspect: 16 / 9, cameraAspect: 16 / 9 });
+  near(boundary.camera.rect.width / boundary.camera.rect.height, 0.72, 1e-6, '输出边界属于后一片段');
+});
+
 test('crop mapping: mosaic redraw uses the original crop and cursor follows that crop', () => {
   const compositor = new Compositor('.');
   const canvas = createMockCanvas(400, 200);

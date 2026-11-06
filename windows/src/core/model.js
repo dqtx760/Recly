@@ -34,11 +34,11 @@ const PATTERN_PRESETS = {
 };
 
 const CAMERA_SHAPES = {
-  square: { label: '方形', aspect: 1 },
-  horizontal: { label: '横向', aspect: 1.5 },
-  vertical: { label: '纵向', aspect: 0.72 },
-  original: { label: '原始比例', aspect: null },
+  square: { label: '圆角方形', aspect: 1 },
   circle: { label: '圆形', aspect: 1 },
+  horizontal: { label: '横向', aspect: 1.5 },
+  vertical: { label: '竖向', aspect: 0.72 },
+  original: { label: '原始比例', aspect: null },
 };
 
 const CLICK_EFFECTS = {
@@ -81,6 +81,7 @@ function defaultCanvas() {
 
 function defaultCamera() {
   return {
+    layout: 'shape',
     shape: 'square',
     position: { x: 0.96, y: 0.47 },
     size: 0.29,

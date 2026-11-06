@@ -147,6 +147,11 @@
             <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M4 8.5h16M8 12.5h8M8 16h5"/></svg>
             <span>提词器</span>
           </button>
+          <button class="tool-btn" hidden id="marker" title="添加剪辑标记 (Ctrl+Alt+M)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M6 21V4M6 5h11l-2 3.5 2 3.5H6"/></svg>
+            <span>标记</span>
+          </button>
+          <button class="tool-btn danger" hidden id="discard" title="放弃本次录制 (Ctrl+Alt+D)">放弃</button>
           <button id="quit" style="display:none" title="退出"></button>
         </footer>
 
@@ -155,37 +160,9 @@
           <button class="btn-rec" id="start" title="开始录制 (Ctrl+Alt+R)">
             <span class="rec-dot"></span>
             <span class="rec-label">开始录制</span>
+            <span id="timer" hidden>00:00</span>
           </button>
         </section>
-      </div>
-
-      <!-- 录制中面板 (#live) -->
-      <div id="live" class="panel" hidden>
-        <div class="live-card">
-          <div class="live-indicator">
-            <div class="pulse-dot"></div>
-            <div class="timer" id="timer">00:00</div>
-          </div>
-          <div class="live-status-text">
-            <b id="liveTitle">正在录制 · 屏幕</b>
-            <small id="liveDetail">录制主控台不会被录入画面</small>
-          </div>
-          <div class="live-actions">
-            <button class="btn" id="marker" title="添加剪辑标记 (Ctrl+Alt+M)">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M6 21V4M6 5h11l-2 3.5 2 3.5H6"/></svg>
-              <span>标记</span>
-            </button>
-            <button class="btn ghost" id="memo2" title="悬浮提词器（录制时不入画）">
-              <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M4 8.5h16M8 12.5h8M8 16h5"/></svg>
-              <span>提词器</span>
-            </button>
-            <button class="btn ghost danger" id="discard" title="放弃本次录制 (Ctrl+Alt+D)">放弃</button>
-          </div>
-        </div>
-        <button class="live-stop-btn" id="stop" title="结束录制 (Ctrl+Alt+R)">
-          <svg class="icon" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg>
-          <span>结束录制</span>
-        </button>
       </div>
 
       <!-- 整理素材中面板 (#busy) -->

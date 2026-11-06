@@ -1,5 +1,5 @@
 'use strict';
-// 右侧检查器：画面 / 运镜 / 光标 / 摄像头 / 声音。控件直接读写项目文档，拖动过程合并成一步撤销。
+// 右侧检查器：画面 / 运镜 / 光标 / 声音 / 字幕。控件直接读写项目文档，拖动过程合并成一步撤销。
 
 const path = require('node:path');
 const { ipcRenderer } = require('electron');
@@ -14,10 +14,8 @@ const { renderSubtitlesPanel } = require('./subtitles-panel');
 
 const TABS = [
   { id: 'canvas', label: '画面', icon: 'canvas' },
-  { id: 'opening', label: '开场', icon: 'wand' },
   { id: 'motion', label: '运镜', icon: 'motion' },
   { id: 'cursor', label: '光标', icon: 'cursor' },
-  { id: 'camera', label: '摄像头', icon: 'camera' },
   { id: 'audio', label: '声音', icon: 'speaker' },
   { id: 'subtitles', label: '字幕', icon: 'memo' },
 ];
@@ -31,7 +29,7 @@ class Inspector {
     this.onToast = null;
     this.tab = 'canvas';
     this.canvasTab = 'background';
-    this.motionMode = 'zoom';
+    this.motionMode = 'opening';
     this.motionDisclosureOpen = false;
     this.scrollPositions = new Map();
     this.renderedContext = null;
@@ -55,6 +53,10 @@ class Inspector {
   }
 
   show(tab) {
+    if (tab === 'camera') {
+      this.canvasTab = 'camera';
+      tab = 'canvas';
+    }
     this.tab = tab;
     if (tab === 'motion') {
       if (this.store.selectedScreenMotion) this.motionMode = 'screen3D';
@@ -176,6 +178,26 @@ class Inspector {
       element('button', { class: value === String(get()) ? 'active' : '', onclick: () => this.store.mutate(() => set(value)) }, text)));
   }
 
+  cameraShapeCards(get, set, cameraAspect) {
+    const options = [
+      { id: 'fullscreen', label: '全屏' },
+      ...Object.entries(CAMERA_SHAPES).filter(([id]) => id !== 'square').map(([id, shape]) => ({ id, label: shape.label })),
+      { id: 'square', label: CAMERA_SHAPES.square.label },
+    ];
+    const selected = get();
+    const originalAspect = clamp(Number(cameraAspect) || (16 / 9), 0.55, 1.9);
+    const originalWidth = Math.min(43, 31 * originalAspect);
+    const originalHeight = originalWidth / originalAspect;
+    return element('div', { class: 'camera-shape-grid', role: 'group', 'aria-label': '摄像头画面形状' }, options.map(({ id, label }) => {
+      const previewStyle = id === 'original' ? `width:${originalWidth}px;height:${originalHeight}px` : '';
+      return element('button', {
+        class: `camera-shape-card camera-shape-option${selected === id ? ' active' : ''}`,
+        type: 'button', 'data-shape': id, 'aria-pressed': selected === id ? 'true' : 'false',
+        'aria-label': label, onclick: () => this.store.mutate(() => set(id)),
+      }, element('span', { class: `camera-shape-preview shape-${id}`, style: previewStyle }), element('span', {}, label));
+    }));
+  }
+
   button(label, onClick, kind = '') {
     return element('button', { class: `btn ${kind}`, onclick: onClick }, label);
   }
@@ -290,7 +312,8 @@ class Inspector {
     this.refreshers = [];
     const tab = TABS.find((item) => item.id === this.tab) || { label: this.tab === 'overlays' ? '画面效果' : this.tab };
     this.title.textContent = tab.label;
-    const context = this.tab === 'canvas' ? `canvas:${this.canvasTab}` : this.tab;
+    const context = this.tab === 'canvas' ? `canvas:${this.canvasTab}`
+      : this.tab === 'motion' ? `motion:${this.motionMode}` : this.tab;
     if (this.renderedContext) this.scrollPositions.set(this.renderedContext, this.root.scrollTop);
     const scroll = context === this.renderedContext ? this.root.scrollTop : (this.scrollPositions.get(context) || 0);
     this.root.replaceChildren(...this[`${this.tab}Panel`]());
@@ -303,8 +326,8 @@ class Inspector {
   canvasPanel() {
     const tabs = [
       { id: 'background', label: '背景' },
+      { id: 'camera', label: '摄像头' },
       { id: 'layout', label: '布局' },
-      { id: 'mockup', label: '样机' },
     ];
     const selectTab = (id, focus = false) => {
       this.canvasTab = id;
@@ -379,7 +402,12 @@ class Inspector {
         background.kind === 'image' ? this.slider('背景模糊', () => canvas.backgroundBlur, (value) => { canvas.backgroundBlur = value; }, { min: 0, max: 60, step: 1 }) : null,
         background.kind === 'pattern' ? this.slider('图案大小', () => canvas.patternScale, (value) => { canvas.patternScale = value; }, { min: 0.4, max: 4, step: 0.05, format: (value) => `${value.toFixed(2)}×` }) : null,
         background.kind === 'pattern' ? this.slider('动态速度', () => canvas.patternMotion || 0, (value) => { canvas.patternMotion = value; }, { min: 0, max: 2, step: 0.05, format: (value) => value === 0 ? '关闭' : `${value.toFixed(2)}×` }) : null),
+      ...this.mockupCanvasPanel(),
     ];
+  }
+
+  cameraCanvasPanel() {
+    return this.cameraPanel();
   }
 
   layoutCanvasPanel() {
@@ -583,8 +611,8 @@ class Inspector {
   }
 
   motionModeSelector() {
-    const options = [{ id: 'zoom', label: '缩放' }, { id: 'screen3D', label: '屏幕 3D' }];
-    return element('div', { class: 'chips motion-mode', role: 'group', 'aria-label': '运镜类型' }, options.map((option) => {
+    const options = [{ id: 'opening', label: '开场' }, { id: 'zoom', label: '缩放' }, { id: 'screen3D', label: '屏幕 3D' }];
+    return element('div', { class: 'frame-tabs motion-mode', role: 'group', 'aria-label': '运镜类型' }, options.map((option) => {
       const selected = this.motionMode === option.id;
       return element('button', {
         type: 'button', class: selected ? 'active' : '', 'aria-pressed': selected ? 'true' : 'false',
@@ -592,8 +620,8 @@ class Inspector {
           if (this.motionMode === option.id) return;
           this.motionMode = option.id;
           const selection = this.store.selection;
-          const switchesSelectedClip = (option.id === 'screen3D' && selection?.type === 'zoom')
-            || (option.id === 'zoom' && selection?.type === 'screen');
+          const switchesSelectedClip = (option.id !== 'zoom' && selection?.type === 'zoom')
+            || (option.id !== 'screen3D' && selection?.type === 'screen');
           if (switchesSelectedClip) this.store.select(null);
           else this.render();
         },
@@ -605,6 +633,8 @@ class Inspector {
     const { project, pointerTrack } = this.store;
     const motion = project.motion;
     const modeSelector = this.motionModeSelector();
+
+    if (this.motionMode === 'opening') return [modeSelector, ...this.openingPanel()];
 
     if (this.motionMode === 'screen3D') {
       const screenMotion = this.store.selectedScreenMotion;
@@ -756,11 +786,26 @@ class Inspector {
     const camera = project.camera;
     if (!project.media.camera) return [this.section('摄像头', element('p', { class: 'note' }, '这次录制未开启摄像头。在录制主控台开启摄像头开关后再开始录制，摄像头画面将作为画中画图层进入工程。'))];
     const cameraMotion = this.store.selectedCameraMotion;
+    const selectedSegment = this.store.selectedSegment;
+    const segmentCount = project.timeline.segments.length;
+    const editsSegmentShape = Boolean(selectedSegment && (segmentCount > 1 || selectedSegment.camera));
+    const shapeTarget = editsSegmentShape ? selectedSegment.camera : camera;
+    const effectiveLayout = shapeTarget?.layout || camera.layout || 'shape';
+    const effectiveShape = shapeTarget?.shape || camera.shape || 'square';
+    const selectedShape = effectiveLayout === 'fullscreen' ? 'fullscreen' : effectiveShape;
+    const setShape = (value) => {
+      const next = value === 'fullscreen'
+        ? { layout: 'fullscreen', shape: effectiveShape }
+        : { layout: 'shape', shape: value };
+      if (editsSegmentShape) selectedSegment.camera = next;
+      else Object.assign(camera, next);
+    };
     const sections = [];
+    let cameraMotionSection = null;
     if (cameraMotion) {
       const target = cameraMotion.target;
       const timing = cameraMotion.timing;
-      sections.push(this.section('选中的摄像头动效',
+      cameraMotionSection = this.section('选中的摄像头动效',
         this.select('目标布局', { shape: '画中画', fullscreen: '全屏' }, () => target.layout || 'shape', (value) => { target.layout = value; }),
         this.chips(Object.fromEntries(Object.entries(CAMERA_SHAPES).map(([id, shape]) => [id, shape.label])), () => target.shape, (value) => { target.layout = 'shape'; target.shape = value; }),
         this.pad(() => target.position, (point) => { target.position = point; }, { aspect: `${project.media.camera.width} / ${project.media.camera.height}` }),
@@ -770,12 +815,47 @@ class Inspector {
         this.slider('进入过渡', () => timing.leadInDuration, (value) => { timing.leadInDuration = value; timing.enterDuration = value; }, { min: 0, max: 5, step: 0.05, format: (value) => `${value.toFixed(2)} 秒` }),
         this.slider('退出过渡', () => timing.returnDuration, (value) => { timing.returnDuration = value; timing.exitDuration = value; }, { min: 0, max: 5, step: 0.05, format: (value) => `${value.toFixed(2)} 秒` }),
         this.select('缓动', ZOOM_EASINGS, () => timing.easing || 'cubic', (value) => { timing.easing = value; }),
-        this.button('删除摄像头动效', () => { this.store.mutate((draft) => { draft.timeline.cameraMotionClips = draft.timeline.cameraMotionClips.filter((item) => item.id !== cameraMotion.id); }); this.store.select(null); }, 'danger')));
+        this.button('删除摄像头动效', () => { this.store.mutate((draft) => { draft.timeline.cameraMotionClips = draft.timeline.cameraMotionClips.filter((item) => item.id !== cameraMotion.id); }); this.store.select(null); }, 'danger'));
     }
     sections.push(
       this.section('显示',
         this.toggle('显示摄像头', () => !camera.isHidden, (on) => { camera.isHidden = !on; }),
         this.toggle('镜像', () => camera.isMirrored, (on) => { camera.isMirrored = on; })),
+      this.section('画面形状',
+        element('p', { class: 'camera-shape-scope' }, editsSegmentShape ? '仅当前片段' : '整段默认'),
+        element('p', { class: 'note' }, editsSegmentShape
+          ? '这里选择的形状只作用于当前选中的主片段。'
+          : (segmentCount === 1
+            ? '视频尚未剪开，这里设置整个视频的默认摄像头形状。'
+            : '当前未选择主片段，这里设置整个视频的默认摄像头形状。')),
+        this.cameraShapeCards(() => selectedShape, setShape, project.media.camera.width / project.media.camera.height),
+        editsSegmentShape && selectedSegment.camera
+          ? this.button('恢复整段默认', () => this.store.mutate(() => { delete selectedSegment.camera; }))
+          : null),
+    );
+    if (cameraMotionSection) sections.push(cameraMotionSection);
+    sections.push(
+      this.section('全局大小与缩放',
+        element('p', { class: 'note' }, '以下大小和缩放设置始终作用于整个视频。'),
+        this.slider('大小', () => camera.size, (value) => { camera.size = value; }, { min: 0.1, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` }),
+        this.slider('全局圆角', () => camera.roundness, (value) => { camera.roundness = value; }, { min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` }),
+        this.slider('屏幕放大时', () => camera.scaleDuringZoom, (value) => { camera.scaleDuringZoom = value; }, { min: 0.3, max: 1, step: 0.01, format: (value) => `缩到 ${Math.round(value * 100)}%` })),
+      this.section('全局位置',
+        this.pad(() => camera.position, (point) => { camera.position = point; }, { aspect: '16 / 9' }),
+        this.chips({ 'tl': '左上', 'tr': '右上', 'bl': '左下', 'br': '右下' }, () => '', (value) => {
+          camera.position = { x: value[1] === 'l' ? 0.04 : 0.96, y: value[0] === 't' ? 0.06 : 0.94 };
+        })),
+      this.section('全局描边与阴影',
+        this.slider('描边', () => camera.borderWidth, (value) => { camera.borderWidth = value; }, { min: 0, max: 18, step: 0.5 }),
+        this.slider('阴影', () => camera.shadowStrength, (value) => { camera.shadowStrength = value; }, { min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` })),
+      this.section('全局摄像头内部取景',
+        element('p', { class: 'note' }, '调整摄像画面在外框中的缩放与中心位置，不会移动外框。'),
+        this.pad(() => camera.contentPosition || { x: 0.5, y: 0.5 }, (point) => { camera.contentPosition = { ...point }; }, { aspect: `${project.media.camera.width} / ${project.media.camera.height}` }),
+        this.slider('画面缩放', () => camera.contentScale ?? 1, (value) => { camera.contentScale = value; }, { min: 0.5, max: 2, step: 0.01, format: (value) => `${value.toFixed(2)}×` }),
+        this.button('恢复内部取景', () => this.store.mutate((draft) => { draft.camera.contentPosition = { x: 0.5, y: 0.5 }; draft.camera.contentScale = 1; }))),
+      this.section('摄像头动效轨',
+        element('p', { class: 'note' }, '在时间线「摄像运镜」轨双击添加一段动效。'),
+        this.button('在播放头添加摄像头动效', () => this.requestEffect('camera'))),
       this.section('音画同步校准',
         element('p', { class: 'note' }, '摄像头画面若比声音动作滞后（无线/网络摄像头延时）或超前时在此校准。负值让画面提前，正值让画面延后。'),
         this.slider('音画同步', () => camera.timeOffset ?? 0, (value) => { camera.timeOffset = value; }, {
@@ -792,28 +872,7 @@ class Inspector {
           else if (value === 'sync-1s') camera.timeOffset = -1.0;
           else if (value === 'sync-2s') camera.timeOffset = -2.0;
           else if (value === 'sync-3s') camera.timeOffset = -3.0;
-        })),
-      this.section('形状与大小',
-        this.chips(Object.fromEntries(Object.entries(CAMERA_SHAPES).map(([id, shape]) => [id, shape.label])), () => camera.shape, (value) => { camera.shape = value; }),
-        this.slider('大小', () => camera.size, (value) => { camera.size = value; }, { min: 0.1, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` }),
-        camera.shape !== 'circle' ? this.slider('圆角', () => camera.roundness, (value) => { camera.roundness = value; }, { min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` }) : null,
-        this.slider('屏幕放大时', () => camera.scaleDuringZoom, (value) => { camera.scaleDuringZoom = value; }, { min: 0.3, max: 1, step: 0.01, format: (value) => `缩到 ${Math.round(value * 100)}%` })),
-      this.section('位置',
-        this.pad(() => camera.position, (point) => { camera.position = point; }, { aspect: '16 / 9' }),
-        this.chips({ 'tl': '左上', 'tr': '右上', 'bl': '左下', 'br': '右下' }, () => '', (value) => {
-          camera.position = { x: value[1] === 'l' ? 0.04 : 0.96, y: value[0] === 't' ? 0.06 : 0.94 };
-        })),
-      this.section('描边与阴影',
-        this.slider('描边', () => camera.borderWidth, (value) => { camera.borderWidth = value; }, { min: 0, max: 18, step: 0.5 }),
-        this.slider('阴影', () => camera.shadowStrength, (value) => { camera.shadowStrength = value; }, { min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%` })),
-      this.section('摄像头内部取景',
-        element('p', { class: 'note' }, '调整摄像画面在外框中的缩放与中心位置，不会移动外框。'),
-        this.pad(() => camera.contentPosition || { x: 0.5, y: 0.5 }, (point) => { camera.contentPosition = { ...point }; }, { aspect: `${project.media.camera.width} / ${project.media.camera.height}` }),
-        this.slider('画面缩放', () => camera.contentScale ?? 1, (value) => { camera.contentScale = value; }, { min: 0.5, max: 2, step: 0.01, format: (value) => `${value.toFixed(2)}×` }),
-        this.button('恢复内部取景', () => this.store.mutate((draft) => { draft.camera.contentPosition = { x: 0.5, y: 0.5 }; draft.camera.contentScale = 1; }))),
-      this.section('摄像头动效轨',
-        element('p', { class: 'note' }, '在时间线「摄像运镜」轨双击添加一段动效。'),
-        this.button('在播放头添加摄像头动效', () => this.requestEffect('camera'))));
+        })));
     return sections;
   }
 

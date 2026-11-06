@@ -86,8 +86,8 @@ async function main() {
   const railButtons = TABS.map((tab) => element('button', { html: `${icon(tab.icon)}<span>${tab.label}</span>`, onclick: () => showTab(tab.id) }));
   $('rail').append(...railButtons);
   function showTab(id) {
-    railButtons.forEach((button, index) => button.classList.toggle('active', TABS[index].id === id));
     inspector.show(id);
+    railButtons.forEach((button, index) => button.classList.toggle('active', TABS[index].id === inspector.tab));
   }
   inspector.timelineView = timelineView;
   const createEffect = async (kind, outputTime) => {

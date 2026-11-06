@@ -38,7 +38,7 @@ async function main() {
     asar: { unpack: '**/node_modules/koffi/**' },
     icon,
     extraResource: [fonts, appIconPng, icon, license, whisper, agent],
-    ignore: [/^\/(dist|build|test|scripts|runtime)($|\/)/, /\.bat$/],
+    ignore: [/^\/(dist|build|builds|test|scripts|runtime)($|\/)/, /\.bat$/],
     win32metadata: { CompanyName: 'Recly', FileDescription: 'Recly', ProductName: 'Recly' },
   });
   console.log(`\n打包完成：${path.join(output, 'Recly.exe')}`);

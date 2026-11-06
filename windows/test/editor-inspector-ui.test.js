@@ -196,14 +196,16 @@ const pendingTests = [];
 
 console.log('Testing editor inspector groups and controls...');
 
-test('画面设置切换背景、布局、样机页签并保留各自滚动位置', () => {
+test('画面设置合并摄像头与样机并保留各分组滚动位置', () => {
+  assert.deepEqual(TABS.map((tab) => tab.id), ['canvas', 'motion', 'cursor', 'audio', 'subtitles']);
   const store = createStore();
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('canvas');
+  assert.deepEqual(root.querySelectorAll('.frame-tabs button').map((button) => button.textContent), ['背景', '摄像头', '布局']);
   assert.equal(root.querySelector('[data-frame-tab="background"]').getAttribute('aria-selected'), 'true');
   assert.ok(findByText(root, '.section', '背景'));
-  assert.equal(root.querySelectorAll('.mockup-option').length, 0);
+  assert.equal(root.querySelectorAll('.mockup-option').length, 6);
 
   root.scrollTop = 84;
   root.querySelector('[data-frame-tab="layout"]').click();
@@ -213,8 +215,9 @@ test('画面设置切换背景、布局、样机页签并保留各自滚动位�
   assert.equal(root.querySelectorAll('.mockup-option').length, 0);
 
   root.scrollTop = 28;
-  root.querySelector('[data-frame-tab="mockup"]').click();
-  assert.equal(root.querySelectorAll('.mockup-option').length, 6);
+  root.querySelector('[data-frame-tab="camera"]').click();
+  assert.equal(inspector.canvasTab, 'camera');
+  assert.ok(root.textContent.includes('这次录制未开启摄像头'));
   root.querySelector('[data-frame-tab="background"]').click();
   assert.equal(root.scrollTop, 84);
   root.querySelector('[data-frame-tab="layout"]').click();
@@ -228,7 +231,6 @@ test('样机卡片应用样式默认值并显示网址、框体和顶栏控件',
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('canvas');
-  root.querySelector('[data-frame-tab="mockup"]').click();
   const browserCard = root.querySelectorAll('.mockup-option').find((item) => item.getAttribute('aria-label') === '浅色浏览器');
   browserCard.click();
 
@@ -257,7 +259,7 @@ test('样机卡片应用样式默认值并显示网址、框体和顶栏控件',
   assert.ok(labels.some((label) => label.includes('框体外圆角')));
 });
 
-test('屏幕 3D 面板支持锚点坐标、目标大小、2D 倾斜与模式切换', () => {
+test('运镜提供独立开场分组并保留屏幕 3D 控件与分组滚动位置', () => {
   const store = createStore();
   const clip = {
     id: 'screen-motion-ui',
@@ -265,12 +267,20 @@ test('屏幕 3D 面板支持锚点坐标、目标大小、2D 倾斜与模式切�
     timing: { startTime: 1, duration: 3, leadInDuration: 0.5, returnDuration: 0.6, easing: 'cubic' },
   };
   store.project.timeline.screenMotionClips.push(clip);
-  store.select({ type: 'screen', id: clip.id });
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('motion');
+  assert.equal(inspector.motionMode, 'opening');
+  assert.deepEqual(root.querySelectorAll('.motion-mode button').map((button) => button.textContent), ['开场', '缩放', '屏幕 3D']);
+  assert.ok(findByText(root, '.section', '全局开场'));
+  const enableOpening = root.querySelectorAll('.field').find((field) => field.textContent.includes('启用开场'));
+  enableOpening.querySelector('button').click();
+  assert.equal(store.project.openingSequence.isEnabled, true);
+  assert.ok(root.querySelectorAll('.field').some((field) => field.textContent.includes('开场时长')));
 
+  store.select({ type: 'screen', id: clip.id });
   assert.ok(root.querySelector('.tilt-pad'));
+  assert.equal(findByText(root, '.section', '全局开场'), null);
   const anchorGroup = root.querySelector('[aria-label="构图锚点"]');
   const anchorX = anchorGroup.querySelector('input');
   anchorX.value = '41';
@@ -297,6 +307,14 @@ test('屏幕 3D 面板支持锚点坐标、目标大小、2D 倾斜与模式切�
   screenMode.click();
   assert.equal(inspector.motionMode, 'screen3D');
   assert.ok(findByText(root, '.section', '屏幕 3D'));
+  root.scrollTop = 120;
+  store.select({ type: 'screen', id: clip.id });
+  root.querySelectorAll('.motion-mode button').find((button) => button.textContent === '开场').click();
+  assert.equal(store.selection, null);
+  assert.equal(inspector.motionMode, 'opening');
+  assert.equal(root.scrollTop, 0);
+  root.querySelectorAll('.motion-mode button').find((button) => button.textContent === '屏幕 3D').click();
+  assert.equal(root.scrollTop, 120);
 });
 
 test('叠加不再占左侧分类，内部贴图面板提供录屏虚化与仅背景入口', () => {
@@ -369,8 +387,53 @@ test('声音面板只允许麦克风放大到 400%，系统声音仍封顶 100%'
   assert.equal(ranges[3].getAttribute('max'), '1', '片段系统声音滑杆上限为 100%');
 });
 
+test('摄像头形状使用可视化卡片并按主片段独立覆盖或恢复全局', () => {
+  const store = createStore();
+  store.project.media.camera = { file: 'camera.mp4', width: 1280, height: 720, duration: 20 };
+  store.project.timeline.segments = [
+    { id: 'first', sourceStart: 0, sourceEnd: 5, speed: 1 },
+    { id: 'middle', sourceStart: 5, sourceEnd: 12, speed: 1 },
+    { id: 'last', sourceStart: 12, sourceEnd: 20, speed: 1 },
+  ];
+  const root = new MockElement('div');
+  const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
+  inspector.show('camera');
+  assert.equal(inspector.tab, 'canvas');
+  assert.equal(inspector.canvasTab, 'camera');
+  assert.equal(inspector.title.textContent, '画面');
+  assert.equal(root.querySelectorAll('.camera-shape-option').length, 6);
+  assert.deepEqual(root.querySelectorAll('.camera-shape-option').map((button) => button.getAttribute('data-shape')),
+    ['fullscreen', 'circle', 'horizontal', 'vertical', 'original', 'square']);
+  assert.ok(root.querySelectorAll('.camera-shape-option').every((button) => button.getAttribute('aria-pressed') !== null));
+  assert.match(root.textContent, /整段默认/);
+
+  store.select({ type: 'segment', id: 'middle' });
+  assert.match(root.textContent, /仅当前片段/);
+  const fullscreen = root.querySelectorAll('.camera-shape-option').find((button) => button.textContent.includes('全屏'));
+  fullscreen.click();
+  assert.deepEqual(store.project.timeline.segments[1].camera, { layout: 'fullscreen', shape: 'square' });
+  assert.equal(store.project.timeline.segments[0].camera, undefined);
+  assert.equal(store.project.camera.layout, 'shape');
+  assert.ok(findByText(root, 'button', '恢复整段默认'));
+  findByText(root, 'button', '恢复整段默认').click();
+  assert.equal(store.project.timeline.segments[1].camera, undefined);
+
+  store.project.timeline.segments = [store.project.timeline.segments[1]];
+  store.select({ type: 'segment', id: 'middle' });
+  root.querySelectorAll('.camera-shape-option').find((button) => button.textContent.includes('圆形')).click();
+  assert.equal(store.project.camera.shape, 'circle', '单片段且没有旧覆盖时修改整段默认');
+  assert.equal(store.project.timeline.segments[0].camera, undefined);
+
+  store.project.timeline.segments[0].camera = { layout: 'shape', shape: 'square' };
+  store.emit('project');
+  assert.match(root.textContent, /仅当前片段/);
+  assert.ok(findByText(root, 'button', '恢复整段默认'));
+  assert.ok(root.querySelectorAll('.field').some((field) => field.textContent.includes('全局圆角')),
+    '全局圆形时仍需显示供局部方形使用的全局圆角');
+});
+
 Promise.all(pendingTests).then(() => {
-  console.log('All 7 editor inspector UI tests passed.');
+  console.log('All 9 editor inspector UI tests passed.');
 }).catch((error) => {
   console.error(error);
   process.exitCode = 1;

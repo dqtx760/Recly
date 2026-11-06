@@ -83,9 +83,10 @@ function splitAt(segments, outputTime) {
   if (sourceTime - segment.sourceStart < MIN_SEGMENT || segment.sourceEnd - sourceTime < MIN_SEGMENT) return null;
   const next = segments.slice();
   const copyAudio = () => segment.audio && typeof segment.audio === 'object' ? { audio: { ...segment.audio } } : {};
+  const copyCamera = () => segment.camera && typeof segment.camera === 'object' ? { camera: { ...segment.camera } } : {};
   next.splice(index, 1,
-    { ...segment, ...copyAudio(), sourceEnd: sourceTime },
-    { ...segment, ...copyAudio(), id: uid(), sourceStart: sourceTime });
+    { ...segment, ...copyAudio(), ...copyCamera(), sourceEnd: sourceTime },
+    { ...segment, ...copyAudio(), ...copyCamera(), id: uid(), sourceStart: sourceTime });
   return next;
 }
 

@@ -9,6 +9,7 @@ const { ScreenProjection } = require('./projection');
 const { openingSample, evaluateMosaics, evaluateStickers, evaluateStickerBackdrop } = require('./opening-overlay');
 const { evaluateCameraMotion, resolveCameraState } = require('./camera-motion');
 const { evaluateScreenMotionLayout } = require('./screen-motion');
+const timeline = require('./timeline');
 const CURSOR_CANONICAL_HEIGHT = 44;
 const CANONICAL_SHORT_EDGE = 1080;
 
@@ -438,7 +439,7 @@ function evaluateScene(project, options = {}) {
   );
   let camera = null;
   if (cameraAspect && !project.camera?.isHidden) {
-    const cameraMotionSample = evaluateCameraMotion(
+    let cameraMotionSample = evaluateCameraMotion(
       rawCameraClips,
       project.camera,
       sampleTime,
@@ -446,6 +447,28 @@ function evaluateScene(project, options = {}) {
       cameraAspect,
       w / h
     );
+    const segments = project.timeline?.segments || [];
+    const outputHit = Number.isFinite(options.outputTime) ? timeline.locate(segments, outputTime) : null;
+    const finalSourceEnd = segments.reduce((latest, segment) => Math.max(latest, segment.sourceEnd), -Infinity);
+    const sourceSegment = outputHit ? null : segments.find((segment) => {
+      const isFinalEnd = sampleTime === finalSourceEnd && segment.sourceEnd === finalSourceEnd;
+      return (sampleTime >= segment.sourceStart && sampleTime < segment.sourceEnd) || isFinalEnd;
+    });
+    const segmentCamera = (outputHit?.segment || sourceSegment)?.camera;
+    if (segmentCamera && typeof segmentCamera === 'object') {
+      const localShape = resolveCameraState(
+        { ...project.camera, ...segmentCamera },
+        cameraAspect,
+        w / h
+      );
+      cameraMotionSample = {
+        ...cameraMotionSample,
+        aspectRatio: localShape.aspectRatio,
+        cornerFraction: localShape.cornerFraction,
+        roundness: localShape.roundness,
+        fullscreenProgress: localShape.fullscreenProgress,
+      };
+    }
     camera = evaluateCamera(
       project.camera,
       cameraAspect,

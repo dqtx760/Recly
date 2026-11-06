@@ -29,6 +29,7 @@ const state = {
   sys: { on: saved.sys ?? true },
   hideDesktopIcons: false,
   savingDesktopIconSetting: false,
+  starting: false,
   session: null,
   result: null,
 };
@@ -60,7 +61,7 @@ const SOURCE_LABELS = { display: '全屏录制', window: '窗口录制', area: '
 // ------------------------------------------------------------------ 状态与渲染
 
 function show(panel) {
-  for (const id of ['idle', 'live', 'busy', 'done']) {
+  for (const id of ['idle', 'busy', 'done']) {
     const el = $(id);
     if (el) el.hidden = id !== panel;
   }
@@ -115,8 +116,10 @@ function render() {
   $('sys-row')?.classList.toggle('on', state.sys.on);
 
   if ($('mic-status')) {
-    $('mic-status').textContent = state.mic.permissionError || (state.mic.on ? '就绪' : '关闭');
-    $('mic-status').classList.toggle('error', Boolean(state.mic.permissionError));
+    const unavailable = state.session && state.mic.on && !state.session.microphone;
+    $('mic-status').textContent = unavailable ? '未能打开'
+      : state.session?.microphone ? '录制中' : state.mic.permissionError || (state.mic.on ? '就绪' : '关闭');
+    $('mic-status').classList.toggle('error', Boolean(unavailable || state.mic.permissionError));
   }
   const cameraStatus = $('cam-status');
   if (cameraStatus) {
@@ -131,6 +134,7 @@ function render() {
       unavailable: '摄像头读取失败',
     };
     cameraStatus.textContent = !state.cam.on ? '关闭'
+      : state.session ? '录制中'
       : state.cam.previewStatus === 'error' ? (labels[state.cam.previewError] || '摄像头读取失败')
         : labels[state.cam.previewStatus] || '检测中';
     cameraStatus.classList.toggle('error', state.cam.on && state.cam.previewStatus === 'error');
@@ -158,8 +162,21 @@ function render() {
   // 4. REC 按钮可用状态
   const startBtn = $('start');
   if (startBtn) {
-    startBtn.disabled = !state.environment.ok;
-    startBtn.title = state.environment.ok ? '开始录制 (Ctrl+Alt+R)' : (state.environment.reason || '暂时无法录制');
+    const recording = Boolean(state.session);
+    const label = recording ? '结束录制' : state.starting ? '正在准备录制…' : '开始录制';
+    startBtn.disabled = state.starting || (!recording && !state.environment.ok);
+    startBtn.classList.toggle('is-recording', recording);
+    const caption = startBtn.querySelector('.rec-label');
+    if (caption) caption.textContent = label;
+    startBtn.title = recording
+      ? ['结束录制 (Ctrl+Alt+R)', ...state.session.problems].join('\n')
+      : state.starting ? label : state.environment.ok ? '开始录制 (Ctrl+Alt+R)' : (state.environment.reason || '暂时无法录制');
+    if ($('timer')) $('timer').hidden = !recording;
+    for (const id of ['library', 'shortcuts-btn']) if ($(id)) $(id).hidden = recording;
+    for (const id of ['marker', 'discard']) if ($(id)) $(id).hidden = !recording;
+    for (const section of document.querySelectorAll('#idle > section:not(.section-rec)')) {
+      section.inert = state.starting || recording;
+    }
   }
 
   const desktopIconsToggle = $('desktop-icons');
@@ -416,7 +433,6 @@ $('open-save-dir')?.addEventListener('click', () => {
 // 底部工具栏
 $('library')?.addEventListener('click', () => ipcRenderer.send('recorder:library'));
 $('memo')?.addEventListener('click', () => ipcRenderer.send('recorder:memo'));
-$('memo2')?.addEventListener('click', () => ipcRenderer.send('recorder:memo'));
 
 // 快捷键设置弹窗
 function handleOpenShortcuts() {
@@ -513,28 +529,48 @@ async function stopTracks(tracks) {
 // ------------------------------------------------------------------ 录制主流程
 
 let timer = null;
+let startFeedbackActive = false;
+
+function beginStartFeedback() {
+  startFeedbackActive = true;
+  state.starting = true;
+  show('idle');
+  render();
+  ipcRenderer.send('recorder:startup-feedback');
+}
+
+function finishStartFeedback(success) {
+  if (!startFeedbackActive) return;
+  startFeedbackActive = false;
+  ipcRenderer.send('recorder:startup-feedback-end', { success });
+}
 
 async function start() {
-  const startBtn = $('start');
-  if (startBtn) startBtn.disabled = true;
-  if (state.cam.on) requestCameraPreview(true, state.cam.deviceId);
-  const { streams, problems } = await openStreams();
+  if (state.starting || state.session || !state.environment.ok || $('busy')?.hidden === false) return;
+  beginStartFeedback();
+  let streams = {};
+  let problems = [];
   const tracks = [];
+  let captureStarted = false;
   const fail = async (error) => {
+    state.starting = false;
     try { await stopTracks(tracks); } catch {}
     Object.values(streams).forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
-    await ipcRenderer.invoke('recorder:cancel', 'preparing').catch(() => {});
+    await ipcRenderer.invoke('recorder:cancel', captureStarted ? 'recording' : 'preparing').catch(() => {});
+    if (state.cam.on) requestCameraPreview(true, state.cam.deviceId);
+    finishStartFeedback(false);
     state.environment = { ...state.environment, ok: false, reason: String(error.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') };
+    show('idle');
     render();
     setTimeout(() => { state.environment.ok = true; render(); }, 6000);
   };
 
-  if (state.cam.on && !streams.camera) {
-    await fail(new Error(problems.length ? `摄像头未就绪（${problems.join('、')}），已取消录制。请检查摄像头是否被占用或在 Windows 隐私设置中授权。` : '未能获取摄像头画面，已取消录制。'));
-    if (startBtn) startBtn.disabled = false;
-    return;
-  }
   try {
+    ({ streams, problems } = await openStreams());
+    if (state.cam.on && !streams.camera) {
+      throw new Error(problems.length ? `摄像头未就绪（${problems.join('、')}），已取消录制。请检查摄像头是否被占用或在 Windows 隐私设置中授权。` : '未能获取摄像头画面，已取消录制。');
+    }
+    if (streams.camera) requestCameraPreview(false, state.cam.deviceId);
     const prepared = await ipcRenderer.invoke('recorder:prepare', { selection: state.selection, frameRate: 60 });
     if (streams.camera) {
       const combined = new MediaStream([...streams.camera.getVideoTracks(), ...(streams.microphone ? streams.microphone.getAudioTracks() : [])]);
@@ -545,38 +581,34 @@ async function start() {
     if (streams.system) tracks.push(startTrack('system', streams.system, prepared.mediaDirectory));
     await Promise.all(tracks.map((track) => track.started));
     await ipcRenderer.invoke('recorder:start');
+    captureStarted = true;
+    await ipcRenderer.invoke('recorder:commit-start');
   } catch (error) {
     await fail(error);
     return;
   }
 
   state.session = { tracks, beganAt: performance.now(), markers: 0, wanted: { camera: state.cam.on, microphone: state.mic.on, system: state.sys.on } };
+  state.starting = false;
 
-  const inputs = [streams.microphone && '麦克风', streams.camera && '摄像头', streams.system && '系统声音'].filter(Boolean);
-  if ($('liveTitle')) $('liveTitle').textContent = inputs.length ? `正在录制 · ${inputs.join(' + ')}` : '正在录制 · 仅画面';
-  if ($('liveDetail')) {
-    $('liveDetail').textContent = problems.length ? `未能打开：${problems.join('、')}` : '录制主控台不会被录入画面';
-    $('liveDetail').title = problems.join('\n');
-    $('liveDetail').classList.toggle('error', problems.length > 0);
-  }
   state.session.problems = problems;
+  state.session.microphone = Boolean(streams.microphone);
   const markerSpan = $('marker')?.querySelector('span');
   if (markerSpan) markerSpan.textContent = '标记';
 
-  show('live');
   timer = setInterval(() => {
     if ($('timer') && state.session) {
       $('timer').textContent = formatTime((performance.now() - state.session.beganAt) / 1000, false);
     }
   }, 250);
   if ($('timer')) $('timer').textContent = '00:00';
-
-  // 录制开始：主进程隐藏控制台窗口，实现全屏录制零遮挡
-  ipcRenderer.send('recorder:hide');
+  render();
+  finishStartFeedback(true);
 }
 
 async function stop(discard) {
   if (!state.session) return;
+  finishStartFeedback(true);
   clearInterval(timer);
   const session = state.session;
   state.session = null;
@@ -645,8 +677,7 @@ async function stop(discard) {
 }
 
 // 录制控制按钮
-$('start')?.addEventListener('click', start);
-$('stop')?.addEventListener('click', () => stop(false));
+$('start')?.addEventListener('click', () => state.session ? stop(false) : start());
 $('discard')?.addEventListener('click', () => stop(true));
 $('marker')?.addEventListener('click', async () => {
   const count = await ipcRenderer.invoke('recorder:marker');
@@ -686,9 +717,7 @@ ipcRenderer.on('camera:status', (event, status) => {
 });
 
 ipcRenderer.on('recorder:start', () => {
-  if (!state.session && $('start') && !$('start').disabled) {
-    show('idle');
-    render();
+  if (!state.starting && !state.session && $('start') && !$('start').disabled) {
     start();
   }
 });
@@ -706,9 +735,7 @@ ipcRenderer.on('recorder:stop', () => {
 ipcRenderer.on('recorder:toggle', () => {
   if (state.session) {
     stop(false);
-  } else if ($('start') && !$('start').disabled) {
-    show('idle');
-    render();
+  } else if (!state.starting && $('start') && !$('start').disabled) {
     start();
   }
 });
