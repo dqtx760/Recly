@@ -26,7 +26,6 @@
   </header>
 
   <main class="workspace">
-    <nav class="rail card" id="rail"></nav>
     <section class="stage" id="stage">
       <div class="ratio card" id="ratio"></div>
       <button class="btn ghost quality-control" id="quality" title="切换预览质量">流畅预览</button>
@@ -40,7 +39,11 @@
         </div>
       </div>
     </section>
-    <aside class="inspector card"><h2 id="inspector-title"></h2><div id="inspector"></div></aside>
+    <aside class="inspector card">
+      <nav class="rail" id="rail" aria-label="编辑功能"></nav>
+      <h2 id="inspector-title"></h2>
+      <div id="inspector"></div>
+    </aside>
   </main>
 
   <footer class="timeline card">

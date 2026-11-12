@@ -82,7 +82,7 @@ async function main() {
   if ($('editor-max')) $('editor-max').addEventListener('click', () => ipcRenderer.send('window:toggle-maximize'));
   if ($('editor-close')) $('editor-close').addEventListener('click', () => ipcRenderer.send('window:close'));
 
-  // ---- 左侧分类栏与画布比例
+  // ---- 右侧分类栏与画布比例
   const railButtons = TABS.map((tab) => element('button', { html: `${icon(tab.icon)}<span>${tab.label}</span>`, onclick: () => showTab(tab.id) }));
   $('rail').append(...railButtons);
   function showTab(id) {

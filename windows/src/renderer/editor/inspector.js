@@ -1,5 +1,5 @@
 'use strict';
-// 右侧检查器：画面 / 运镜 / 光标 / 声音 / 字幕。控件直接读写项目文档，拖动过程合并成一步撤销。
+// 右侧检查器：画面 / 运镜 / 字幕 / 声音 / 光标。控件直接读写项目文档，拖动过程合并成一步撤销。
 
 const path = require('node:path');
 const { ipcRenderer } = require('electron');
@@ -15,9 +15,9 @@ const { renderSubtitlesPanel } = require('./subtitles-panel');
 const TABS = [
   { id: 'canvas', label: '画面', icon: 'canvas' },
   { id: 'motion', label: '运镜', icon: 'motion' },
-  { id: 'cursor', label: '光标', icon: 'cursor' },
-  { id: 'audio', label: '声音', icon: 'speaker' },
   { id: 'subtitles', label: '字幕', icon: 'memo' },
+  { id: 'audio', label: '声音', icon: 'speaker' },
+  { id: 'cursor', label: '光标', icon: 'cursor' },
 ];
 
 class Inspector {
@@ -28,7 +28,7 @@ class Inspector {
     this.title = title;
     this.onToast = null;
     this.tab = 'canvas';
-    this.canvasTab = 'background';
+    this.canvasTab = 'camera';
     this.motionMode = 'opening';
     this.motionDisclosureOpen = false;
     this.scrollPositions = new Map();
@@ -325,8 +325,8 @@ class Inspector {
 
   canvasPanel() {
     const tabs = [
-      { id: 'background', label: '背景' },
       { id: 'camera', label: '摄像头' },
+      { id: 'background', label: '背景' },
       { id: 'layout', label: '布局' },
     ];
     const selectTab = (id, focus = false) => {

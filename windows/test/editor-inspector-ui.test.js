@@ -197,12 +197,14 @@ const pendingTests = [];
 console.log('Testing editor inspector groups and controls...');
 
 test('画面设置合并摄像头与样机并保留各分组滚动位置', () => {
-  assert.deepEqual(TABS.map((tab) => tab.id), ['canvas', 'motion', 'cursor', 'audio', 'subtitles']);
+  assert.deepEqual(TABS.map((tab) => tab.id), ['canvas', 'motion', 'subtitles', 'audio', 'cursor']);
   const store = createStore();
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('canvas');
-  assert.deepEqual(root.querySelectorAll('.frame-tabs button').map((button) => button.textContent), ['背景', '摄像头', '布局']);
+  assert.deepEqual(root.querySelectorAll('.frame-tabs button').map((button) => button.textContent), ['摄像头', '背景', '布局']);
+  assert.equal(root.querySelector('[data-frame-tab="camera"]').getAttribute('aria-selected'), 'true');
+  root.querySelector('[data-frame-tab="background"]').click();
   assert.equal(root.querySelector('[data-frame-tab="background"]').getAttribute('aria-selected'), 'true');
   assert.ok(findByText(root, '.section', '背景'));
   assert.equal(root.querySelectorAll('.mockup-option').length, 6);
@@ -231,6 +233,7 @@ test('样机卡片应用样式默认值并显示网址、框体和顶栏控件',
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('canvas');
+  root.querySelector('[data-frame-tab="background"]').click();
   const browserCard = root.querySelectorAll('.mockup-option').find((item) => item.getAttribute('aria-label') === '浅色浏览器');
   browserCard.click();
 

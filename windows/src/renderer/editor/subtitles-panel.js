@@ -34,6 +34,9 @@ function panelState(inspector) {
       candidate: null,
       candidateTrack: null,
       confirmReplace: false,
+      tab: 'content',
+      query: '',
+      replacement: '',
     };
   }
   return inspector.subtitlesState;
@@ -79,6 +82,20 @@ function alignedWordTexts(text, language) {
 function field(label, control, className = '') {
   return element('label', { class: `subtitles-field${className ? ` ${className}` : ''}` },
     element('span', {}, label), control);
+}
+
+function replaceCueText(cue, query, replacement) {
+  if (!query || query === replacement) return 0;
+  const parts = cue.text.split(query);
+  if (parts.length === 1) return 0;
+  const next = parts.join(replacement);
+  const words = cue.words.map((word) => ({ ...word, text: word.text.split(query).join(replacement) }));
+  if (cue.alignment === 'valid' && cue.words.length
+    && cue.words.map((word) => word.text).join('') === cue.text
+    && words.map((word) => word.text).join('') === next) cue.words = words;
+  else cue.alignment = 'stale';
+  cue.text = next;
+  return parts.length - 1;
 }
 
 function numberInput(value, { min = 0, max, step = 0.01, label } = {}) {
@@ -134,6 +151,12 @@ function renderSubtitlesPanel(inspector) {
     element('div', {}, element('h3', {}, '字幕轨'), note('字幕时间按录屏源时间保存，剪辑后会映射到成片。')),
     enabled));
 
+  panel.append(element('nav', { class: 'subtitles-tabs frame-tabs', 'aria-label': '字幕分组' },
+    [['content', '内容'], ['style', '样式'], ['recognition', '识别']].map(([id, label]) => element('button', {
+      type: 'button', class: state.tab === id ? 'active' : '', 'aria-pressed': String(state.tab === id),
+      onclick: () => { state.tab = id; inspector.root.scrollTop = 0; inspector.render(); },
+    }, label))));
+
   const style = subtitles.style;
   const fontSize = element('input', { type: 'number', min: 12, max: 160, step: 1, value: style.fontSize, 'aria-label': '字号' });
   fontSize.addEventListener('change', () => {
@@ -166,7 +189,7 @@ function renderSubtitlesPanel(inspector) {
     const position = Number(baseline.value);
     if (Number.isFinite(position)) write((value) => { value.style.baselineY = Math.min(Math.max(position, 0.1), 0.9); });
   });
-  panel.append(element('section', { class: 'subtitles-section' }, element('h4', {}, '样式'),
+  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'style' }, element('h4', {}, '样式'),
     field('字号（1080p）', fontSize),
     field('文字颜色', textColor),
     field('底色', backgroundColor),
@@ -288,7 +311,7 @@ function renderSubtitlesPanel(inspector) {
   };
 
   const availableTrack = state.track === 'microphone' ? media.microphone : media.systemAudio;
-  panel.append(element('section', { class: 'subtitles-section' }, element('h4', {}, '语音识别'),
+  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'recognition' }, element('h4', {}, '语音识别'),
     engineLine,
     field('声音来源', trackSelect),
     field('识别范围', scopeSelect),
@@ -358,7 +381,7 @@ function renderSubtitlesPanel(inspector) {
   if (state.candidate) {
     const previewItems = state.candidate.slice(0, 4).map((cue) => element('li', {},
       element('time', {}, `${cue.start.toFixed(2)}–${cue.end.toFixed(2)} 秒`), cue.text));
-    panel.append(element('section', { class: 'subtitles-candidate' },
+    panel.append(element('section', { class: 'subtitles-candidate', hidden: state.tab !== 'recognition' },
       element('h4', {}, `识别候选 · ${state.candidate.length} 条`),
       note('候选还没有写入工程。追加会保留已校对内容；替换需要再次确认。'),
       element('ul', {}, previewItems),
@@ -374,7 +397,34 @@ function renderSubtitlesPanel(inspector) {
 
   const mapped = mapCuesToOutput(project);
   const warningCount = mapped.warnings?.length || 0;
-  panel.append(element('section', { class: 'subtitles-section' },
+  const search = element('input', { type: 'search', value: state.query, placeholder: '查找字幕', 'aria-label': '查找字幕' });
+  const replacement = element('input', { type: 'text', value: state.replacement, placeholder: '替换为（可留空）', 'aria-label': '字幕替换为' });
+  const searchStatus = element('p', { class: 'subtitles-note', role: 'status' });
+  const replaceAll = button('全部替换', () => {
+    let count = 0;
+    write((value) => {
+      for (const cue of value.cues) count += replaceCueText(cue, state.query, state.replacement);
+    });
+    inspector.onToast?.(`已替换 ${count} 处，可撤销恢复。`);
+  });
+  const cueNodes = [];
+  const refreshSearch = () => {
+    let matches = 0;
+    for (const { node, cue } of cueNodes) {
+      const count = state.query ? cue.text.split(state.query).length - 1 : 0;
+      node.hidden = Boolean(state.query && !count);
+      matches += count;
+    }
+    searchStatus.textContent = state.query ? `找到 ${matches} 处 · 精确匹配，区分大小写` : '搜索所有源字幕；替换只修改文字，不剪切音视频。';
+    replaceAll.disabled = !matches || state.query === state.replacement;
+    replaceAll.textContent = matches ? `全部替换（${matches} 处）` : '全部替换';
+  };
+  search.addEventListener('input', () => { state.query = search.value; refreshSearch(); });
+  replacement.addEventListener('input', () => { state.replacement = replacement.value; refreshSearch(); });
+  panel.append(element('section', { class: 'subtitles-section subtitles-search', hidden: state.tab !== 'content' },
+    field('查找', search), field('替换为', replacement),
+    element('div', { class: 'subtitles-actions' }, replaceAll), searchStatus));
+  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'content' },
     element('div', { class: 'subtitles-list-heading' }, element('h4', {}, `字幕条目 · ${subtitles.cues.length}`),
       element('div', { class: 'subtitles-actions' }, button('添加字幕', addCue), button('导出 SRT', saveSrt, 'ghost'))),
     warningCount ? note(`${warningCount} 条字幕跨越剪切边界，但没有可靠词对齐，预览和导出中会隐藏。`, 'warning') : null,
@@ -410,15 +460,24 @@ function renderSubtitlesPanel(inspector) {
         });
       });
       const remove = button('删除', () => write((value) => { value.cues = value.cues.filter((item) => item.id !== cue.id); }), 'danger');
-      return element('article', { class: 'subtitle-cue', 'data-cue-id': cue.id },
+      const occurrence = mapped.find((item) => item.id === cue.id);
+      const locate = element('button', {
+        type: 'button', class: 'btn ghost', disabled: !occurrence,
+        title: occurrence ? `定位成片 ${occurrence.start.toFixed(2)} 秒（首次出现）` : '此字幕未出现在当前成片中',
+        onclick: () => inspector.preview.seek(occurrence.start),
+      }, '定位画面');
+      const node = element('article', { class: 'subtitle-cue', 'data-cue-id': cue.id },
         element('div', { class: 'subtitle-cue-heading' }, element('b', {}, `#${index + 1}`),
           element('span', { class: cue.alignment === 'stale' ? 'alignment stale' : 'alignment' }, cue.alignment === 'stale' ? '需重新对齐' : '词时间有效'), remove),
-        text,
+        element('div', { class: 'subtitles-actions' }, locate), text,
         element('div', { class: 'subtitle-times' }, field('开始（源秒）', start), field('结束（源秒）', end)),
         cue.alignment === 'stale' ? note('文字或时间已修改，剪切边界无法按词拆分；完整保留时仍会显示。') : null);
+      cueNodes.push({ node, cue });
+      return node;
     }) : note('还没有字幕。可手动添加，也可从录制音轨识别。')));
 
+  refreshSearch();
   return [panel];
 }
 
-module.exports = { renderSubtitlesPanel, semanticWords, alignedWordTexts };
+module.exports = { renderSubtitlesPanel, semanticWords, alignedWordTexts, replaceCueText };

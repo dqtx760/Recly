@@ -7,6 +7,7 @@ const { normalizeSubtitleLanguage, normalizeSubtitles, mapCuesToOutput, activeCu
 const { createMockCanvas, drawSubtitleText } = require('../src/renderer/editor/render');
 let semanticWords;
 let alignedWordTexts;
+let replaceCueText;
 const originalModuleLoad = Module._load;
 const originalLocation = global.location;
 global.location = { search: '' };
@@ -15,7 +16,7 @@ Module._load = function loadWithoutElectron(request, parent, isMain) {
   return originalModuleLoad.call(this, request, parent, isMain);
 };
 try {
-  ({ semanticWords, alignedWordTexts } = require('../src/renderer/editor/subtitles-panel'));
+  ({ semanticWords, alignedWordTexts, replaceCueText } = require('../src/renderer/editor/subtitles-panel'));
 } finally {
   Module._load = originalModuleLoad;
   global.location = originalLocation;
@@ -61,6 +62,24 @@ assert.equal(normalizeSubtitles({ language: 'zh-hans-cn' }).language, 'zh-Hans-C
 assert.doesNotThrow(() => semanticWords('你好 Recly', 'zh--CN'));
 assert.deepEqual(semanticWords(null, 'zh--CN'), []);
 assert.deepEqual(alignedWordTexts({ invalid: true }, ''), []);
+
+const editable = { text: 'Recly 好用 Recly', originalText: 'Recly 好用 Recly', alignment: 'valid', words: [
+  { text: 'Recly', start: 0, end: 1 }, { text: ' 好用 ', start: 1, end: 2 }, { text: 'Recly', start: 2, end: 3 },
+] };
+assert.equal(replaceCueText(editable, 'Recly', '录屏'), 2);
+assert.equal(editable.text, '录屏 好用 录屏');
+assert.equal(editable.originalText, 'Recly 好用 Recly');
+assert.equal(editable.alignment, 'valid');
+assert.deepEqual(editable.words.map(({ start, end }) => [start, end]), [[0, 1], [1, 2], [2, 3]]);
+assert.equal(replaceCueText(editable, '录屏 好用', '教程'), 1);
+assert.equal(editable.alignment, 'stale', '跨词替换不应编造新的词级时间戳');
+const literal = { text: 'a.$ a.$', alignment: 'valid', words: [] };
+assert.equal(replaceCueText(literal, '.$', '$&'), 2);
+assert.equal(literal.text, 'a$& a$&', '查询和替换内容都按字面处理');
+assert.equal(replaceCueText(literal, '', 'x'), 0);
+assert.equal(replaceCueText(literal, 'a', 'a'), 0);
+assert.equal(replaceCueText(literal, '$&', ''), 2);
+assert.equal(literal.text, 'a a');
 
 const project = makeProject({
   name: '映射',
