@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
+const { normalizeModel } = require('./assistant-model');
 
 const DEFAULT_CONFIG = Object.freeze({
   protocol: 'openai',
@@ -178,24 +179,31 @@ async function readLimitedBody(response, { abort, maxBytes = MAX_RESPONSE_BYTES 
   return Buffer.concat(chunks, bytes).toString('utf8');
 }
 
-function extractApiText(protocol, responseText) {
+function extractApiResponse(protocol, responseText) {
   let envelope;
   try { envelope = JSON.parse(responseText); } catch { throw safeError('API 响应不是有效 JSON'); }
   if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) throw safeError('API 响应格式无效');
   if (Object.hasOwn(envelope, 'reply') || Object.hasOwn(envelope, 'operationsJson') || Object.hasOwn(envelope, 'subtitlePatchJson')) {
-    return JSON.stringify(envelope);
+    return { text: JSON.stringify(envelope), model: null };
   }
   let content;
+  let model = null;
   if (protocol === 'anthropic') {
+    if (Array.isArray(envelope.content)) model = normalizeModel(envelope.model);
     content = Array.isArray(envelope.content)
       ? envelope.content.filter((item) => item?.type === 'text' && typeof item.text === 'string').map((item) => item.text).join('\n')
       : '';
   } else {
+    if (Array.isArray(envelope.choices)) model = normalizeModel(envelope.model);
     const message = envelope.choices?.[0]?.message?.content;
     content = typeof message === 'string' ? message : '';
   }
   if (!content) throw safeError('API 未返回助手文本');
-  return content;
+  return { text: content, model };
+}
+
+function extractApiText(protocol, responseText) {
+  return extractApiResponse(protocol, responseText).text;
 }
 
 async function requestAssistantApi(config, apiKey, prompt, { fetchImpl = globalThis.fetch, signal, abort, maxResponseBytes = MAX_RESPONSE_BYTES } = {}) {
@@ -220,7 +228,7 @@ async function requestAssistantApi(config, apiKey, prompt, { fetchImpl = globalT
   }
   const responseText = await readLimitedBody(response, { abort, maxBytes: maxResponseBytes });
   if (!response.ok) throw safeError(`API 服务返回错误（HTTP ${Number(response.status) || 0}）`);
-  return extractApiText(config.protocol, responseText);
+  return extractApiResponse(config.protocol, responseText);
 }
 
 module.exports = {
@@ -231,5 +239,6 @@ module.exports = {
   normalizeSettings,
   endpointUrl,
   extractApiText,
+  extractApiResponse,
   requestAssistantApi,
 };

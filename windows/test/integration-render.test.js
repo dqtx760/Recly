@@ -27,6 +27,30 @@ const test = (name, body) => {
 
 console.log('Running integration-render.test.js...');
 
+test('local transition follows the selected segment start through speed and reorder', () => {
+  const project = model.makeProject({ media: { screen: { duration: 20, width: 1280, height: 720 }, camera: { width: 1280, height: 720 } }, capture: {} });
+  project.openingSequence.isEnabled = false;
+  const local = { isEnabled: true, preset: 'sideSlide', duration: 2, includedElements: ['screen', 'camera'], elementOrder: ['screen', 'camera'], stagger: 0 };
+  project.timeline.segments = [{ id: 'a', sourceStart: 0, sourceEnd: 4, speed: 1 },
+    { id: 'b', sourceStart: 10, sourceEnd: 16, speed: 2, openingSequence: local },
+    { id: 'c', sourceStart: 16, sourceEnd: 20, speed: 1 }];
+  const sample = outputTime => {
+    const hit = require('../src/core/timeline').locate(project.timeline.segments, outputTime);
+    return scene.evaluateScene(project, { time: hit.sourceTime, outputTime, sourceAspect: 16 / 9, cameraAspect: 16 / 9 });
+  };
+  assert.equal(sample(0).opening.scale, 1);
+  assert.equal(sample(3.99).opening.scale, 1);
+  assert.ok(sample(4).opening.scale < 1, '第二段成片起点应启动局部转场');
+  assert.ok(sample(4.5).opening.camera.scale < 1);
+  assert.equal(sample(6.1).opening.scale, 1, '持续秒数不随片段速度缩短');
+  assert.equal(sample(7).opening.scale, 1, '其它片段不受影响');
+  project.timeline.segments = [project.timeline.segments[1], project.timeline.segments[0], project.timeline.segments[2]];
+  assert.ok(sample(0).opening.scale < 1, '重排后转场跟随片段');
+  assert.equal(sample(3).opening.scale, 1);
+  project.timeline.segments[0].openingSequence.isEnabled = false;
+  assert.equal(sample(0).opening.scale, 1, '片段可单独禁用转场');
+});
+
 test('screen motion: adjacent clips inherit the previous target continuously', () => {
   const base = { position: { x: 0.5, y: 0.5 }, scale: 1, rotationX: 0, rotationY: 0, rotationZ: 0, perspective: 0 };
   const clips = [

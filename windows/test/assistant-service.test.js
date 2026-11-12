@@ -22,14 +22,37 @@ assert.ok(!prompt.includes('private-source.mp4') && !prompt.includes('private-to
 assert.ok(prompt.includes(JSON.stringify(SCHEMA)), '发给 API 的 prompt 必须明确包含 JSON Schema');
 assert.equal(parseResult(event, 'codex').operations[0].patch.shape, 'circle');
 assert.equal(parseResult(JSON.stringify({ structured_output: plan }), 'claude').historyAction, 'none');
+const runtimeCodex = parseResult([
+  JSON.stringify({ type: 'turn.started', turn: { model: 'gpt-6.1-sol' } }),
+  event,
+].join('\n'), 'codex');
+assert.deepEqual({ model: runtimeCodex.model, modelSource: runtimeCodex.modelSource }, { model: 'gpt-6.1-sol', modelSource: 'runtime' });
+const runtimeClaude = parseResult(JSON.stringify({ model: 'claude-sonnet-4-5', structured_output: plan }), 'claude');
+assert.deepEqual({ model: runtimeClaude.model, modelSource: runtimeClaude.modelSource }, { model: 'claude-sonnet-4-5', modelSource: 'runtime' });
 assert.throws(() => parseResult('{"type":"turn.failed"}', 'codex'));
 assert.throws(() => parseResult(JSON.stringify({ structured_output: { ...plan, operationsJson: '{}' } }), 'claude'));
+const mappedPrompt = promptFor({
+  message: '按字幕分镜',
+  project: {
+    media: { screen: { duration: 10 } },
+    timeline: { segments: [{ id: 'kept-segment', sourceStart: 3, sourceEnd: 10, speed: 1 }], screenMotionClips: [], cameraMotionClips: [] },
+    subtitles: { enabled: true, cues: [
+      { id: 'trimmed-count', start: 0, end: 2, text: '12345' },
+      { id: 'retained-line', start: 4, end: 5, text: '保留字幕' },
+    ] },
+  },
+});
+const mappedData = JSON.parse(mappedPrompt.split('本次数据：\n').at(-1));
+assert.equal(mappedData.project.originalOutputDuration, 7);
+assert.deepEqual(mappedData.project.outputSubtitles, [{ id: 'retained-line', start: 1, end: 2, text: '保留字幕' }],
+  '场景分析应收到当前保留片段映射后的成片时间字幕');
 
 async function main() {
   const children = [];
   const service = createAssistantService({
     workDirectory: fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-test-')),
     detectBackends: () => [{ id: 'codex', label: 'Codex', executable: 'codex.exe' }],
+    readCodexModel: async () => null,
     spawnProcess: (exe, args, options) => {
       assert.equal(options.shell, false);
       assert.equal(options.windowsHide, true);
@@ -41,9 +64,9 @@ async function main() {
       return child;
     },
   });
-  assert.deepEqual(service.detect(), [
-    { id: 'codex', label: 'Codex', available: true },
-    { id: 'api', label: 'API Key', available: true },
+  assert.deepEqual(await service.detect(), [
+    { id: 'codex', label: 'Codex', available: true, model: null, modelSource: 'unreported' },
+    { id: 'api', label: 'API Key', available: true, model: null, modelSource: 'unreported' },
   ]);
   const first = service.send(payload, 1);
   await assert.rejects(service.send(payload, 1), /仍在处理/);
@@ -88,12 +111,18 @@ async function main() {
     detectBackends: () => [],
     fetchImpl: async (url, options) => {
       apiRequest = { url, options };
-      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(plan) } }] }), { status: 200 });
+      return new Response(JSON.stringify({ model: 'gpt-6.1-mini', choices: [{ message: { content: JSON.stringify(plan) } }] }), { status: 200 });
     },
   });
   apiService.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'test-model', apiKey });
   assert.equal(apiService.getApiConfig().apiKey, undefined, '配置 IPC 不返回密钥');
-  assert.equal((await apiService.send(apiPayload, 17)).reply, plan.reply);
+  const apiResult = await apiService.send(apiPayload, 17);
+  assert.equal(apiResult.reply, plan.reply);
+  assert.equal(apiResult.model, 'gpt-6.1-mini');
+  assert.equal(apiResult.modelSource, 'runtime');
+  assert.deepEqual((await apiService.detect()).find((item) => item.id === 'api'), {
+    id: 'api', label: 'API Key', available: true, model: 'test-model', modelSource: 'config',
+  });
   assert.equal(apiRequest.url, 'https://api.example/v1/chat/completions');
   assert.equal(apiRequest.options.redirect, 'error');
   assert.equal(apiRequest.options.headers.authorization, `Bearer ${apiKey}`);
@@ -113,6 +142,16 @@ async function main() {
   });
   echoService.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'test-model', apiKey });
   await assert.rejects(echoService.send(apiPayload, 21), (error) => error.message.includes('已隐藏') && !error.message.includes(apiKey));
+
+  for (const modelKey of ['private-key-123', 'abc']) {
+    const modelEcho = createAssistantService({
+      workDirectory: fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-model-echo-')), safeStorage, detectBackends: () => [],
+      fetchImpl: async () => new Response(JSON.stringify({ model: modelKey, choices: [{ message: { content: JSON.stringify(plan) } }] }), { status: 200 }),
+    });
+    modelEcho.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'test-model', apiKey: modelKey });
+    await assert.rejects(modelEcho.send(apiPayload, 21), error => error.message.includes('已隐藏') && !error.message.includes(modelKey), '模型元数据也不能回显密钥');
+    modelEcho.close();
+  }
 
   let cancelSignal;
   const pendingService = createAssistantService({

@@ -85,9 +85,11 @@ async function main() {
   // ---- 右侧分类栏与画布比例
   const railButtons = TABS.map((tab) => element('button', { html: `${icon(tab.icon)}<span>${tab.label}</span>`, onclick: () => showTab(tab.id) }));
   $('rail').append(...railButtons);
+  const updateRailSelection = () => railButtons.forEach((button, index) => button.classList.toggle('active', TABS[index].id === inspector.tab));
+  inspector.onTabChange = updateRailSelection;
   function showTab(id) {
     inspector.show(id);
-    railButtons.forEach((button, index) => button.classList.toggle('active', TABS[index].id === inspector.tab));
+    updateRailSelection();
   }
   timelineView.onSelectSubtitle = () => {
     if (inspector.subtitlesState) inspector.subtitlesState.tab = 'subtitles';

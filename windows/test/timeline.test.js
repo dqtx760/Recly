@@ -16,6 +16,16 @@ const close = (actual, expected, label) =>
 
 console.log('Testing Timeline Editing...');
 
+test('split retains a local transition only on the original left start', () => {
+  const original = [{ id: 'one', sourceStart: 0, sourceEnd: 6, speed: 1,
+    openingSequence: { isEnabled: true, includedElements: ['screen'], duration: 2 } }];
+  const result = timeline.splitAt(original, 3);
+  assert.equal(result[0].openingSequence.isEnabled, true);
+  assert.equal(result[1].openingSequence, undefined, '右半段不会自动重复原片段转场');
+  result[0].openingSequence.includedElements.push('camera');
+  assert.deepEqual(original[0].openingSequence.includedElements, ['screen']);
+});
+
 test('reordered source segments preserve locate and source-to-output mapping', () => {
   const segments = [
     { id: 'early', sourceStart: 0, sourceEnd: 2, speed: 1 },

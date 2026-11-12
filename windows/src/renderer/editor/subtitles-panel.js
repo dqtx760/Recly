@@ -178,7 +178,7 @@ function renderSubtitlesPanel(inspector) {
     onclick: () => write((value) => { value.enabled = !value.enabled; }),
   }, subtitles.enabled ? '已启用' : '已关闭');
   panel.append(element('nav', { class: 'subtitles-tabs frame-tabs', 'aria-label': '字幕分组' },
-    [['subtitles', '字幕'], ['text', '文本'], ['animation', '动画']].map(([id, label]) => element('button', {
+    [['subtitles', '内容'], ['text', '样式'], ['animation', '动画']].map(([id, label]) => element('button', {
       type: 'button', class: state.tab === id ? 'active' : '', 'aria-pressed': String(state.tab === id),
       onclick: () => { state.tab = id; inspector.root.scrollTop = 0; inspector.render(); },
     }, label))));

@@ -1,5 +1,5 @@
 'use strict';
-// 右侧检查器：画面 / 运镜 / 字幕 / 声音 / 光标。控件直接读写项目文档，拖动过程合并成一步撤销。
+// 右侧检查器：画面 / 运镜 / 字幕 / 其他 / AI 助手。控件直接读写项目文档，拖动过程合并成一步撤销。
 
 const path = require('node:path');
 const { ipcRenderer } = require('electron');
@@ -17,8 +17,7 @@ const TABS = [
   { id: 'canvas', label: '画面', icon: 'canvas' },
   { id: 'motion', label: '运镜', icon: 'motion' },
   { id: 'subtitles', label: '字幕', icon: 'memo' },
-  { id: 'audio', label: '声音', icon: 'speaker' },
-  { id: 'cursor', label: '光标', icon: 'cursor' },
+  { id: 'other', label: '其他', icon: 'area' },
   { id: 'assistant', label: 'AI 助手', icon: 'wand' },
 ];
 
@@ -31,6 +30,8 @@ class Inspector {
     this.onToast = null;
     this.tab = 'canvas';
     this.canvasTab = 'camera';
+    this.otherTab = 'audio';
+    this.openingScope = 'project';
     this.motionMode = 'opening';
     this.motionDisclosureOpen = false;
     this.scrollPositions = new Map();
@@ -41,10 +42,23 @@ class Inspector {
       if (reason === 'project' && store.gesture) this.refreshValues();
       else if (reason === 'project' || reason === 'selection' || reason === 'history') {
         if (reason === 'selection') {
-          if (store.selection?.type === 'subtitle') this.tab = 'subtitles';
-          if (store.selection && ['sticker', 'mosaic'].includes(store.selection.type)) this.tab = 'overlays';
-          else if (store.selectedScreenMotion) this.motionMode = 'screen3D';
-          else if (store.selectedZoom) this.motionMode = 'zoom';
+          const selection = store.selection;
+          const selectedSegment = selection?.type === 'segment' ? store.selectedSegment : null;
+          this.openingScope = selectedSegment && (store.project.timeline.segments.length > 1 || selectedSegment.openingSequence) ? 'segment' : 'project';
+          if (selection?.type === 'subtitle') {
+            this.tab = 'subtitles';
+            if (this.subtitlesState) this.subtitlesState.tab = 'subtitles';
+          } else if (selection && ['sticker', 'mosaic'].includes(selection.type)) this.tab = 'overlays';
+          else if (selection?.type === 'screen') {
+            this.tab = 'motion';
+            this.motionMode = 'screen3D';
+          } else if (selection?.type === 'zoom') {
+            this.tab = 'motion';
+            this.motionMode = 'zoom';
+          } else if (selection?.type === 'camera' || selection?.type === 'segment') {
+            this.tab = 'canvas';
+            this.canvasTab = 'camera';
+          }
         }
         this.render();
       }
@@ -56,6 +70,10 @@ class Inspector {
   }
 
   show(tab) {
+    if (tab === 'audio' || tab === 'cursor') {
+      this.otherTab = tab;
+      tab = 'other';
+    }
     if (tab === 'camera') {
       this.canvasTab = 'camera';
       tab = 'canvas';
@@ -317,12 +335,14 @@ class Inspector {
     this.title.textContent = tab.label;
     if (this.assistantControls) this.assistantControls.hidden = this.tab !== 'assistant';
     const context = this.tab === 'canvas' ? `canvas:${this.canvasTab}`
-      : this.tab === 'motion' ? `motion:${this.motionMode}` : this.tab;
+      : this.tab === 'motion' ? `motion:${this.motionMode}${this.motionMode === 'opening' ? `:${this.openingScope}:${this.store.selectedSegment?.id || ''}` : ''}`
+        : this.tab === 'other' ? `other:${this.otherTab}` : this.tab;
     if (this.renderedContext) this.scrollPositions.set(this.renderedContext, this.root.scrollTop);
     const scroll = context === this.renderedContext ? this.root.scrollTop : (this.scrollPositions.get(context) || 0);
     this.root.replaceChildren(...this[`${this.tab}Panel`]());
     this.root.scrollTop = scroll;
     this.renderedContext = context;
+    this.onTabChange?.(this.tab);
   }
 
   // ---------------------------------------------------------------- 面板
@@ -496,29 +516,74 @@ class Inspector {
 
   openingPanel() {
     const project = this.store.project;
-    const sequence = project.openingSequence;
+    const segment = this.store.selectedSegment;
+    const canEditSegment = Boolean(segment && (project.timeline.segments.length > 1 || segment.openingSequence));
+    const segmentScope = canEditSegment && this.openingScope === 'segment';
+    const segmentOverride = segmentScope ? segment.openingSequence : null;
+    const maxDuration = segmentScope ? Math.min(8, timeline.segmentOutputDuration(segment)) : 8;
+    const sequence = segmentScope
+      ? { ...project.openingSequence, ...(segmentOverride || {}), isEnabled: segmentOverride ? Boolean(segmentOverride.isEnabled) : false,
+        duration: Math.min(segmentOverride?.duration ?? project.openingSequence.duration, maxDuration) }
+      : project.openingSequence;
+    const writeSequence = (change) => {
+      if (!segmentScope) return change(project.openingSequence);
+      const target = project.timeline.segments.find((item) => item.id === segment.id);
+      if (!target) return;
+      if (!target.openingSequence) target.openingSequence = {
+        ...project.openingSequence,
+        isEnabled: false,
+        includedElements: [...(project.openingSequence.includedElements || [])],
+        elementOrder: [...(project.openingSequence.elementOrder || [])],
+      };
+      else target.openingSequence = { ...project.openingSequence, ...target.openingSequence };
+      target.openingSequence.duration = Math.min(target.openingSequence.duration, maxDuration);
+      change(target.openingSequence);
+      change(sequence);
+    };
     const presets = { converge: '聚拢', sideSlide: '侧滑', light3D: '轻 3D' };
     const curves = { swift: '利落', smooth: '平滑', gentle: '柔和' };
     const elements = { screen: '屏幕', camera: '摄像头', stickers: '贴图' };
     const included = new Set(sequence.includedElements || []);
+    const scopeTabs = canEditSegment ? element('div', { class: 'frame-tabs opening-scope-tabs', role: 'tablist', 'aria-label': '转场作用范围' }, [
+      ['segment', '当前片段'], ['project', '整片'],
+    ].map(([id, label]) => element('button', {
+      type: 'button', class: this.openingScope === id ? 'active' : '', role: 'tab',
+      'data-opening-scope': id, 'aria-selected': String(this.openingScope === id),
+      onclick: () => { this.openingScope = id; this.render(); },
+    }, label))) : null;
+    const clearSegmentOverride = segmentScope && segmentOverride
+      ? this.button('移除片段转场', () => this.store.mutate((draft) => {
+        const target = draft.timeline.segments.find((item) => item.id === segment.id);
+        if (target) delete target.openingSequence;
+      }), 'danger')
+      : null;
     return [
-      this.section('全局开场',
-        element('p', { class: 'note' }, '开场从成片的 0 秒开始，剪掉录屏前段后也会保持在成片开头。'),
-        this.toggle('启用开场', () => sequence.isEnabled, (on) => { sequence.isEnabled = on; }),
-        sequence.isEnabled ? this.chips(presets, () => sequence.preset, (value) => { sequence.preset = value; }) : null,
-        sequence.isEnabled ? this.select('动效曲线', curves, () => sequence.motionCurve, (value) => { sequence.motionCurve = value; }) : null,
-        sequence.isEnabled ? this.slider('开场时长', () => sequence.duration, (value) => { sequence.duration = value; sequence.stagger = Math.min(sequence.stagger, Math.max(0, sequence.duration - 0.18)); }, { min: 0.4, max: 8, step: 0.05, format: (value) => `${value.toFixed(2)} 秒` }) : null,
-        sequence.isEnabled ? this.slider('元素错开', () => sequence.stagger, (value) => { sequence.stagger = clamp(value, 0, Math.min(1.2, Math.max(0, sequence.duration - 0.18))); }, { min: 0, max: 1.2, step: 0.02, format: (value) => `${value.toFixed(2)} 秒` }) : null,
+      scopeTabs,
+      this.section(segmentScope ? '当前片段转场' : '全片转场',
+        element('p', { class: 'note' }, segmentScope
+          ? (segmentOverride
+            ? '转场从当前片段成片的 0 秒开始，只影响这一段。'
+            : '当前片段默认关闭转场，其他参数沿用全片设置。启用或修改后只影响这一段，并从该片段成片的 0 秒开始。')
+          : '转场从成片的 0 秒开始，剪掉录屏前段后也会保持在成片开头。'),
+        this.toggle('启用转场', () => sequence.isEnabled, (on) => writeSequence((target) => { target.isEnabled = on; })),
+        sequence.isEnabled ? this.chips(presets, () => sequence.preset, (value) => writeSequence((target) => { target.preset = value; })) : null,
+        sequence.isEnabled ? this.select('动效曲线', curves, () => sequence.motionCurve, (value) => writeSequence((target) => { target.motionCurve = value; })) : null,
+        sequence.isEnabled ? this.slider('转场时长', () => sequence.duration, (value) => writeSequence((target) => {
+          target.duration = value;
+          target.stagger = Math.min(target.stagger, Math.max(0, target.duration - 0.18));
+        }), { min: Math.min(0.4, maxDuration), max: maxDuration, step: 0.05, format: (value) => `${value.toFixed(2)} 秒` }) : null,
+        sequence.isEnabled ? this.slider('元素错开', () => sequence.stagger, (value) => writeSequence((target) => { target.stagger = clamp(value, 0, Math.min(1.2, Math.max(0, target.duration - 0.18))); }), { min: 0, max: 1.2, step: 0.02, format: (value) => `${value.toFixed(2)} 秒` }) : null,
         sequence.isEnabled ? element('div', { class: 'chips' }, Object.entries(elements).map(([value, label]) => element('button', {
           class: included.has(value) ? 'active' : '', onclick: () => {
-            this.store.mutate((draft) => {
-              const next = new Set(draft.openingSequence.includedElements || []);
+            this.store.mutate(() => writeSequence((target) => {
+              const next = new Set(target.includedElements || []);
               if (next.has(value)) next.delete(value); else next.add(value);
-              draft.openingSequence.includedElements = [...next];
-              draft.openingSequence.stagger = Math.min(draft.openingSequence.stagger, Math.max(0, draft.openingSequence.duration - 0.18));
-            });
+              target.includedElements = [...next];
+              target.stagger = Math.min(target.stagger, Math.max(0, target.duration - 0.18));
+            }));
           },
-        }, label))) : null),
+        }, label))) : null,
+        clearSegmentOverride),
     ];
   }
 
@@ -615,7 +680,7 @@ class Inspector {
   }
 
   motionModeSelector() {
-    const options = [{ id: 'opening', label: '开场' }, { id: 'zoom', label: '缩放' }, { id: 'screen3D', label: '屏幕 3D' }];
+    const options = [{ id: 'opening', label: '转场' }, { id: 'screen3D', label: '屏幕 3D' }, { id: 'zoom', label: '缩放' }];
     return element('div', { class: 'frame-tabs motion-mode', role: 'group', 'aria-label': '运镜类型' }, options.map((option) => {
       const selected = this.motionMode === option.id;
       return element('button', {
@@ -783,6 +848,23 @@ class Inspector {
         element('p', { class: 'note' }, '光标比画面早或晚时在这里微调，不影响移动平滑。正值让光标更早出现。'),
         this.slider('光标时间', () => style.timeOffset, (value) => { style.timeOffset = value; }, { min: -0.5, max: 0.5, step: 0.005, format: (value) => `${value > 0 ? '+' : ''}${Math.round(value * 1000)} 毫秒` })),
     ];
+  }
+
+  otherPanel() {
+    const tabs = [
+      { id: 'audio', label: '声音' },
+      { id: 'cursor', label: '光标' },
+    ];
+    const navigation = element('div', { class: 'frame-tabs other-tabs', role: 'tablist', 'aria-label': '其他设置' }, tabs.map((tab) => {
+      const selected = this.otherTab === tab.id;
+      return element('button', {
+        type: 'button', class: selected ? 'active' : '', role: 'tab',
+        'data-other-tab': tab.id, 'aria-selected': String(selected),
+        onclick: () => { this.otherTab = tab.id; this.render(); },
+      }, tab.label);
+    }));
+    const panel = this[`${this.otherTab}Panel`]();
+    return [navigation, ...panel];
   }
 
   cameraPanel() {

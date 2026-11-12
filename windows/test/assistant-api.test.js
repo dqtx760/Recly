@@ -71,13 +71,13 @@ async function main() {
 
   let openAiRequest;
   const openAiContent = JSON.stringify(responsePlan);
-  const openAiText = await requestAssistantApi(
+  const openAiResponse = await requestAssistantApi(
     { protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'model-a' },
     secret,
     'prompt body',
     { fetchImpl: async (url, options) => {
       openAiRequest = { url, options };
-      return new Response(JSON.stringify({ choices: [{ message: { content: openAiContent } }] }), { status: 200 });
+      return new Response(JSON.stringify({ model: 'provider/gpt-runtime', choices: [{ message: { content: openAiContent } }] }), { status: 200 });
     } },
   );
   assert.equal(openAiRequest.url, 'https://api.example/v1/chat/completions');
@@ -85,23 +85,25 @@ async function main() {
   assert.equal(openAiRequest.options.redirect, 'error');
   assert.equal(openAiRequest.options.headers.authorization, `Bearer ${secret}`);
   assert.deepEqual(JSON.parse(openAiRequest.options.body), { model: 'model-a', messages: [{ role: 'user', content: 'prompt body' }] });
-  assert.deepEqual(parseResult(openAiText, 'api'), { reply: responsePlan.reply, operations: [], subtitlePatch: {}, historyAction: 'none' });
+  assert.deepEqual(openAiResponse, { text: openAiContent, model: 'provider/gpt-runtime' });
+  assert.deepEqual(parseResult(openAiResponse.text, 'api'), { reply: responsePlan.reply, operations: [], subtitlePatch: {}, historyAction: 'none' });
   assert.throws(() => parseResult(JSON.stringify({ ...responsePlan, unexpected: true }), 'api'), /格式无效/);
 
   let anthropicRequest;
-  const anthropicText = await requestAssistantApi(
+  const anthropicResponse = await requestAssistantApi(
     { protocol: 'anthropic', baseUrl: 'https://api.example/v1', model: 'claude-test' },
     secret,
     'prompt body',
     { fetchImpl: async (url, options) => {
       anthropicRequest = { url, options };
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(responsePlan) }] }), { status: 200 });
+      return new Response(JSON.stringify({ model: 'claude-sonnet-actual', content: [{ type: 'text', text: JSON.stringify(responsePlan) }] }), { status: 200 });
     } },
   );
   assert.equal(anthropicRequest.url, 'https://api.example/v1/messages');
   assert.equal(anthropicRequest.options.headers['x-api-key'], secret);
   assert.equal(anthropicRequest.options.headers['anthropic-version'], '2023-06-01');
-  assert.equal(parseResult(anthropicText, 'api').reply, responsePlan.reply);
+  assert.deepEqual(anthropicResponse, { text: JSON.stringify(responsePlan), model: 'claude-sonnet-actual' });
+  assert.equal(parseResult(anthropicResponse.text, 'api').reply, responsePlan.reply);
 
   await assert.rejects(requestAssistantApi(
     { protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'model-a' }, secret, 'prompt body',

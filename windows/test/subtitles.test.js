@@ -220,3 +220,13 @@ assert.deepEqual(scales.at(-1), [0.94, 0.94]);
 assert.equal(normalizeSubtitles({ style: { animation: 'invalid', animationDuration: 99, fontFamily: 'unavailable' } }).style.animation, 'none');
 assert.equal(normalizeSubtitles({ style: { animationDuration: 99 } }).style.animationDuration, 1.5);
 console.log('字幕轨测试通过');
+const continuous = makeProject({ media: { screen: { duration: 8, width: 1280, height: 720 } }, capture: {} });
+continuous.timeline.segments = [{ id: 'camera-a', sourceStart: 0, sourceEnd: 3, speed: 1 },
+  { id: 'camera-b', sourceStart: 3, sourceEnd: 8, speed: 1, camera: { layout: 'fullscreen' } }];
+continuous.subtitles.cues = [{ id: 'corrected', start: 2, end: 4, text: '已经校正的一整句字幕', alignment: 'stale', words: [] },
+  { id: 'late', start: 5, end: 7, text: '后段字幕', alignment: 'valid', words: [] }];
+assert.deepEqual(mapCuesToOutput(continuous).map(cue => [cue.id, cue.start, cue.end, cue.segmentId]),
+  [['corrected', 2, 4, 'camera-a'], ['late', 5, 7, 'camera-b']], '只切换视角的连续片段保留完整句子及正确起始片段');
+assert.equal(mapCuesToOutput(continuous).warnings.length, 0);
+continuous.timeline.segments[1].sourceStart = 3.5;
+assert.ok(mapCuesToOutput(continuous).warnings.some(warning => warning.cueId === 'corrected'), '真正删掉半句时仍需对齐检查');

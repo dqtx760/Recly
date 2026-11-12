@@ -7,6 +7,8 @@ const Module = require('node:module');
 const model = require('../src/core/model');
 const { FRAME_DEFAULTS } = require('../src/core/crop-frame');
 const { StickerClip } = require('../src/core/opening-overlay');
+const { makeScreenMotionClip } = require('../src/core/screen-motion');
+const { makeClip } = require('../src/core/zoom');
 
 class MockElement {
   constructor(tag, attributes = {}) {
@@ -162,6 +164,11 @@ function createStore() {
         ? this.project.timeline.screenMotionClips.find((item) => item.id === this.selection.id) || null
         : null;
     },
+    get selectedCameraMotion() {
+      return this.selection?.type === 'camera'
+        ? this.project.timeline.cameraMotionClips.find((item) => item.id === this.selection.id) || null
+        : null;
+    },
   };
 }
 
@@ -174,6 +181,9 @@ const electron = { ipcRenderer: { invoke: (channel, payload) => {
 const originalLoad = Module._load;
 Module._load = function loadForInspector(request, parent, isMain) {
   if (request === 'electron') return electron;
+  if (request === './subtitles-panel') {
+    return { renderSubtitlesPanel: (inspector) => [element('div', { class: 'test-subtitles-panel' }, inspector.subtitlesState?.tab || 'subtitles')] };
+  }
   const parentPath = parent?.filename.replaceAll('/', '\\');
   if (request === '../common' && (
     parentPath?.endsWith('renderer\\editor\\inspector.js')
@@ -187,7 +197,9 @@ Module._load = function loadForInspector(request, parent, isMain) {
 const { Inspector, TABS } = require('../src/renderer/editor/inspector');
 Module._load = originalLoad;
 
+let testCount = 0;
 const test = (name, body) => {
+  testCount += 1;
   const result = body();
   if (result && typeof result.then === 'function') {
     pendingTests.push(result.then(() => console.log(`  ok  ${name}`)));
@@ -198,7 +210,7 @@ const pendingTests = [];
 console.log('Testing editor inspector groups and controls...');
 
 test('画面设置合并摄像头与样机并保留各分组滚动位置', () => {
-  assert.deepEqual(TABS.map((tab) => tab.id), ['canvas', 'motion', 'subtitles', 'audio', 'cursor', 'assistant']);
+  assert.deepEqual(TABS.map((tab) => tab.id), ['canvas', 'motion', 'subtitles', 'other', 'assistant']);
   const store = createStore();
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
@@ -225,6 +237,99 @@ test('画面设置合并摄像头与样机并保留各分组滚动位置', () =>
   assert.equal(root.scrollTop, 84);
   root.querySelector('[data-frame-tab="layout"]').click();
   assert.equal(root.scrollTop, 28);
+});
+
+test('其他分组保留声音和光标入口及各自滚动位置，兼容旧入口', () => {
+  const store = createStore();
+  store.pointerTrack = [];
+  const root = new MockElement('div');
+  const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
+  inspector.show('audio');
+
+  assert.equal(inspector.tab, 'other');
+  assert.equal(inspector.otherTab, 'audio');
+  assert.deepEqual(root.querySelectorAll('.other-tabs button').map((button) => button.textContent), ['声音', '光标']);
+  assert.equal(root.querySelector('[data-other-tab="audio"]').getAttribute('aria-selected'), 'true');
+  assert.ok(findByText(root, '.section', '麦克风'));
+  root.scrollTop = 84;
+
+  root.querySelector('[data-other-tab="cursor"]').click();
+  assert.equal(inspector.otherTab, 'cursor');
+  assert.equal(root.scrollTop, 0);
+  assert.ok(findByText(root, '.section', '样式'));
+  root.scrollTop = 28;
+
+  root.querySelector('[data-other-tab="audio"]').click();
+  assert.equal(root.scrollTop, 84);
+  inspector.show('cursor');
+  assert.equal(inspector.tab, 'other');
+  assert.equal(root.scrollTop, 28);
+  inspector.show('audio');
+  assert.equal(root.scrollTop, 84);
+});
+
+test('AI 助手应用时间线选择时切换到对应检查器并同步顶部分类', () => {
+  const store = createStore();
+  store.project.media.camera = { file: 'camera.mp4', width: 1280, height: 720, duration: 20 };
+  const screenClip = makeScreenMotionClip({
+    id: 'selected-screen-motion',
+    timing: { startTime: 1, duration: 2, leadInDuration: 0.2, returnDuration: 0.2, easing: 'cubic' },
+  });
+  const cameraClip = {
+    id: 'selected-camera-motion',
+    target: { layout: 'shape', shape: 'square', position: { x: 0.8, y: 0.2 }, size: 0.25 },
+    timing: { startTime: 1, duration: 2, leadInDuration: 0.2, returnDuration: 0.2, easing: 'cubic' },
+  };
+  store.project.timeline.screenMotionClips.push(screenClip);
+  store.project.timeline.cameraMotionClips.push(cameraClip);
+  store.project.zoomAnimations.push(makeClip({ id: 'selected-zoom', startTime: 1, endTime: 2, scale: 1.5, focus: { x: 0.5, y: 0.5 } }));
+  const root = new MockElement('div');
+  const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
+  inspector.assistantView = element('div', {}, 'AI 助手');
+  const tabChanges = [];
+  const rail = TABS.map((tab) => ({ id: tab.id, active: false }));
+  inspector.onTabChange = (tab) => {
+    tabChanges.push(tab);
+    rail.forEach((button) => { button.active = button.id === tab; });
+  };
+  inspector.show('assistant');
+
+  store.select({ type: 'screen', id: screenClip.id });
+  assert.equal(inspector.tab, 'motion');
+  assert.equal(inspector.motionMode, 'screen3D');
+  assert.equal(tabChanges.at(-1), 'motion');
+  assert.deepEqual(rail.filter((button) => button.active).map((button) => button.id), ['motion']);
+  assert.ok(root.querySelector('.tilt-pad'));
+
+  inspector.show('assistant');
+  store.select({ type: 'zoom', id: 'selected-zoom' });
+  assert.equal(inspector.tab, 'motion');
+  assert.equal(inspector.motionMode, 'zoom');
+  assert.equal(tabChanges.at(-1), 'motion');
+
+  inspector.show('assistant');
+  inspector.subtitlesState = { tab: 'text' };
+  store.select({ type: 'subtitle', id: 'selected-subtitle' });
+  assert.equal(inspector.tab, 'subtitles');
+  assert.equal(inspector.subtitlesState.tab, 'subtitles');
+  assert.equal(tabChanges.at(-1), 'subtitles');
+
+  inspector.show('assistant');
+  store.select({ type: 'segment', id: store.project.timeline.segments[0].id });
+  assert.equal(inspector.tab, 'canvas');
+  assert.equal(inspector.canvasTab, 'camera');
+  assert.equal(tabChanges.at(-1), 'canvas');
+
+  inspector.show('assistant');
+  store.select({ type: 'camera', id: cameraClip.id });
+  assert.equal(inspector.tab, 'canvas');
+  assert.equal(inspector.canvasTab, 'camera');
+  assert.ok(findByText(root, '.section', '选中的摄像头动效'));
+  assert.deepEqual(rail.filter((button) => button.active).map((button) => button.id), ['canvas']);
+
+  inspector.show('assistant');
+  store.select(null);
+  assert.equal(inspector.tab, 'assistant', '清除选择时保留当前面板');
 });
 
 test('样机卡片应用样式默认值并显示网址、框体和顶栏控件', () => {
@@ -263,28 +368,28 @@ test('样机卡片应用样式默认值并显示网址、框体和顶栏控件',
   assert.ok(labels.some((label) => label.includes('框体外圆角')));
 });
 
-test('运镜提供独立开场分组并保留屏幕 3D 控件与分组滚动位置', () => {
+test('运镜按转场、屏幕 3D、缩放排序并保留屏幕 3D 控件与分组滚动位置', () => {
   const store = createStore();
-  const clip = {
+  const clip = makeScreenMotionClip({
     id: 'screen-motion-ui',
     target: { position: { x: 0.3, y: 0.7 }, scale: 1.4, rotationX: 4, rotationY: -8, rotationZ: 2, perspective: 0.65 },
     timing: { startTime: 1, duration: 3, leadInDuration: 0.5, returnDuration: 0.6, easing: 'cubic' },
-  };
+  });
   store.project.timeline.screenMotionClips.push(clip);
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('motion');
   assert.equal(inspector.motionMode, 'opening');
-  assert.deepEqual(root.querySelectorAll('.motion-mode button').map((button) => button.textContent), ['开场', '缩放', '屏幕 3D']);
-  assert.ok(findByText(root, '.section', '全局开场'));
-  const enableOpening = root.querySelectorAll('.field').find((field) => field.textContent.includes('启用开场'));
+  assert.deepEqual(root.querySelectorAll('.motion-mode button').map((button) => button.textContent), ['转场', '屏幕 3D', '缩放']);
+  assert.ok(findByText(root, '.section', '全片转场'));
+  const enableOpening = root.querySelectorAll('.field').find((field) => field.textContent.includes('启用转场'));
   enableOpening.querySelector('button').click();
   assert.equal(store.project.openingSequence.isEnabled, true);
-  assert.ok(root.querySelectorAll('.field').some((field) => field.textContent.includes('开场时长')));
+  assert.ok(root.querySelectorAll('.field').some((field) => field.textContent.includes('转场时长')));
 
   store.select({ type: 'screen', id: clip.id });
   assert.ok(root.querySelector('.tilt-pad'));
-  assert.equal(findByText(root, '.section', '全局开场'), null);
+  assert.equal(findByText(root, '.section', '全片转场'), null);
   const anchorGroup = root.querySelector('[aria-label="构图锚点"]');
   const anchorX = anchorGroup.querySelector('input');
   anchorX.value = '41';
@@ -313,12 +418,74 @@ test('运镜提供独立开场分组并保留屏幕 3D 控件与分组滚动位�
   assert.ok(findByText(root, '.section', '屏幕 3D'));
   root.scrollTop = 120;
   store.select({ type: 'screen', id: clip.id });
-  root.querySelectorAll('.motion-mode button').find((button) => button.textContent === '开场').click();
+  root.querySelectorAll('.motion-mode button').find((button) => button.textContent === '转场').click();
   assert.equal(store.selection, null);
   assert.equal(inspector.motionMode, 'opening');
   assert.equal(root.scrollTop, 0);
   root.querySelectorAll('.motion-mode button').find((button) => button.textContent === '屏幕 3D').click();
   assert.equal(root.scrollTop, 120);
+});
+
+test('转场支持单独作用于选中片段、继承全片参数并恢复全片设置', () => {
+  const store = createStore();
+  store.project.timeline.segments = [
+    { id: 'before', sourceStart: 0, sourceEnd: 5, speed: 1 },
+    { id: 'selected', sourceStart: 5, sourceEnd: 12, speed: 1 },
+    { id: 'after', sourceStart: 12, sourceEnd: 20, speed: 1 },
+  ];
+  Object.assign(store.project.openingSequence, {
+    isEnabled: true, preset: 'converge', motionCurve: 'smooth', duration: 3.5, stagger: 0.4,
+    includedElements: ['screen'], elementOrder: ['screen', 'camera', 'stickers'],
+  });
+  const globalIncluded = store.project.openingSequence.includedElements;
+  const segment = store.project.timeline.segments[1];
+  const root = new MockElement('div');
+  const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
+  store.select({ type: 'segment', id: segment.id });
+  inspector.show('motion');
+
+  assert.equal(inspector.openingScope, 'segment');
+  assert.equal(root.querySelector('[data-opening-scope="segment"]').getAttribute('aria-selected'), 'true');
+  assert.ok(findByText(root, '.section', '当前片段转场'));
+  assert.match(root.textContent, /默认关闭.*参数沿用全片设置/);
+  const enable = root.querySelectorAll('.field').find((field) => field.textContent.includes('启用转场'));
+  enable.querySelector('button').click();
+  assert.equal(segment.openingSequence.isEnabled, true);
+  assert.equal(segment.openingSequence.preset, 'converge');
+  assert.equal(segment.openingSequence.duration, 3.5);
+  assert.notEqual(segment.openingSequence.includedElements, globalIncluded);
+  assert.deepEqual(segment.openingSequence.includedElements, ['screen']);
+  assert.equal(store.project.openingSequence.preset, 'converge');
+  assert.equal(store.project.openingSequence.isEnabled, true);
+  const durationInput = findByText(root, '.section', '当前片段转场').querySelectorAll('.field')
+    .find((field) => field.textContent.includes('转场时长')).querySelector('input');
+  durationInput.dispatchEvent('pointerdown');
+  durationInput.value = '4.25';
+  durationInput.dispatchEvent('input');
+  assert.equal(segment.openingSequence.duration, 4.25);
+  assert.equal(store.project.openingSequence.duration, 3.5);
+  durationInput.dispatchEvent('change');
+
+  root.querySelector('[data-opening-scope="project"]').click();
+  const globalSection = findByText(root, '.section', '全片转场');
+  globalSection.querySelectorAll('.chips button').find((button) => button.textContent === '侧滑').click();
+  assert.equal(store.project.openingSequence.preset, 'sideSlide');
+  assert.equal(segment.openingSequence.preset, 'converge');
+
+  root.querySelector('[data-opening-scope="segment"]').click();
+  const localSection = findByText(root, '.section', '当前片段转场');
+  localSection.querySelectorAll('.chips button').find((button) => button.textContent === '轻 3D').click();
+  assert.equal(segment.openingSequence.preset, 'light3D');
+  assert.equal(store.project.openingSequence.preset, 'sideSlide');
+  findByText(root, 'button', '移除片段转场').click();
+  assert.equal(segment.openingSequence, undefined);
+  assert.equal(store.project.openingSequence.preset, 'sideSlide');
+
+  root.querySelectorAll('.field').find((field) => field.textContent.includes('启用转场')).querySelector('button').click();
+  store.mutate((draft) => { draft.timeline.segments = [draft.timeline.segments.find((item) => item.id === segment.id)]; });
+  assert.equal(inspector.openingScope, 'segment');
+  assert.ok(root.querySelector('[data-opening-scope="segment"]'), '只剩一个片段时，已有的片段转场仍可编辑和移除');
+  assert.ok(findByText(root, '.section', '当前片段转场'));
 });
 
 test('叠加不再占左侧分类，内部贴图面板提供录屏虚化与仅背景入口', () => {
@@ -436,8 +603,22 @@ test('摄像头形状使用可视化卡片并按主片段独立覆盖或恢复�
     '全局圆形时仍需显示供局部方形使用的全局圆角');
 });
 
+test('短片段转场时长控件与实际片段长度一致', () => {
+  const store = createStore();
+  store.project.timeline.segments = [{ id: 'before', sourceStart: 0, sourceEnd: 5, speed: 1 },
+    { id: 'short', sourceStart: 5, sourceEnd: 7, speed: 2 }];
+  const root = new MockElement('div');
+  const inspector = new Inspector(store, { sourceTime: 5 }, root, { textContent: '' });
+  store.select({ type: 'segment', id: 'short' });
+  inspector.show('motion');
+  root.querySelectorAll('.field').find(field => field.textContent.includes('启用转场')).querySelector('button').click();
+  const duration = root.querySelectorAll('.field').find(field => field.textContent.includes('转场时长')).querySelector('input');
+  assert.equal(Number(duration.getAttribute('max')), 1);
+  assert.equal(store.project.timeline.segments[1].openingSequence.duration, 1);
+});
+
 Promise.all(pendingTests).then(() => {
-  console.log('All 9 editor inspector UI tests passed.');
+  console.log(`All ${testCount} editor inspector UI tests passed.`);
 }).catch((error) => {
   console.error(error);
   process.exitCode = 1;

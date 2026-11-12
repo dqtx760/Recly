@@ -336,8 +336,14 @@ function evaluateScene(project, options = {}) {
   const screenMotion = screen.screenMotion;
 
   // 2. 开场序列
-  const openingSeq = project.openingSequence;
-  const openingSourceTime = project.timeline?.segments?.[0]?.sourceStart ?? 0;
+  const openingSegments = project.timeline?.segments || [];
+  const openingHit = Number.isFinite(options.outputTime) ? timeline.locate(openingSegments, outputTime) : null;
+  const localSequence = openingHit?.segment?.openingSequence;
+  const openingSeq = localSequence ? { ...project.openingSequence, ...localSequence,
+    duration: Math.min(localSequence.duration ?? project.openingSequence?.duration ?? 2.2, timeline.segmentOutputDuration(openingHit.segment)) }
+    : project.openingSequence;
+  const openingTime = localSequence ? outputTime - openingHit.outputStart : outputTime;
+  const openingSourceTime = (localSequence ? openingHit.segment.sourceStart : openingSegments[0]?.sourceStart) ?? 0;
   const hasOpeningSticker = Boolean(
     (options.stickerClips || project.timeline?.stickerClips)?.some(clip => {
       const start = clip.timing?.startTime ?? clip.startTime ?? 0;
@@ -362,7 +368,7 @@ function evaluateScene(project, options = {}) {
     'screen',
     openingSeq,
     availableOpeningElements,
-    outputTime,
+    openingTime,
     w,
     h
   );
@@ -433,7 +439,7 @@ function evaluateScene(project, options = {}) {
     'camera',
     openingSeq,
     availableOpeningElements,
-    outputTime,
+    openingTime,
     w,
     h
   );
@@ -486,7 +492,7 @@ function evaluateScene(project, options = {}) {
     'stickers',
     openingSeq,
     availableOpeningElements,
-    outputTime,
+    openingTime,
     w,
     h
   );

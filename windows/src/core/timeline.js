@@ -84,9 +84,12 @@ function splitAt(segments, outputTime) {
   const next = segments.slice();
   const copyAudio = () => segment.audio && typeof segment.audio === 'object' ? { audio: { ...segment.audio } } : {};
   const copyCamera = () => segment.camera && typeof segment.camera === 'object' ? { camera: { ...segment.camera } } : {};
+  const leftOpening = segment.openingSequence ? { openingSequence: JSON.parse(JSON.stringify(segment.openingSequence)) } : {};
+  const right = { ...segment, ...copyAudio(), ...copyCamera(), id: uid(), sourceStart: sourceTime };
+  delete right.openingSequence;
   next.splice(index, 1,
-    { ...segment, ...copyAudio(), ...copyCamera(), sourceEnd: sourceTime },
-    { ...segment, ...copyAudio(), ...copyCamera(), id: uid(), sourceStart: sourceTime });
+    { ...segment, ...copyAudio(), ...copyCamera(), ...leftOpening, sourceEnd: sourceTime },
+    right);
   return next;
 }
 

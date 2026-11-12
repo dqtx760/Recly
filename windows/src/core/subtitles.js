@@ -114,14 +114,26 @@ function mapCuesToOutput(project) {
   const mapped = [];
   const warnings = [];
   let outputStart = 0;
-
+  // 仅切换视角的连续切片没有删掉词句，字幕按连续素材区间映射，避免切点把整句隐藏。
+  const runs = [];
   for (const segment of segments) {
+    if (!Number.isFinite(segment?.sourceStart) || !Number.isFinite(segment?.sourceEnd) || !Number.isFinite(segment?.speed)
+      || segment.sourceEnd <= segment.sourceStart || segment.speed <= 0) continue;
+    const previous = runs[runs.length - 1];
+    if (previous && Math.abs(previous.sourceEnd - segment.sourceStart) < 1e-7 && previous.speed === segment.speed) {
+      previous.sourceEnd = segment.sourceEnd;
+      previous.members.push(segment);
+    } else runs.push({ ...segment, members: [segment] });
+  }
+
+  for (const segment of runs) {
     const sourceStart = Number(segment?.sourceStart);
     const sourceEnd = Number(segment?.sourceEnd);
     const speed = Number(segment?.speed);
     if (!Number.isFinite(sourceStart) || !Number.isFinite(sourceEnd) || !Number.isFinite(speed)
       || sourceEnd <= sourceStart || speed <= 0) continue;
     const segmentDuration = (sourceEnd - sourceStart) / speed;
+    const segmentIdAt = (time) => (segment.members.find((item) => time >= item.sourceStart && time < item.sourceEnd) || segment).id || null;
 
     for (const cue of subtitles.cues) {
       const intersectionStart = Math.max(cue.start, sourceStart);
@@ -136,7 +148,7 @@ function mapCuesToOutput(project) {
           sourceEnd: cue.end,
           start: outputStart + (cue.start - sourceStart) / speed,
           end: outputStart + (cue.end - sourceStart) / speed,
-          segmentId: segment.id || null,
+          segmentId: segmentIdAt(cue.start),
         });
         continue;
       }
@@ -166,7 +178,7 @@ function mapCuesToOutput(project) {
             sourceEnd: words[words.length - 1].sourceEnd,
             start: words[0].start,
             end: words[words.length - 1].end,
-            segmentId: segment.id || null,
+            segmentId: segmentIdAt(words[0].sourceStart),
           });
         }
         if (!alignedWords || !words.length || !text) warnings.push({ cueId: cue.id, message: `字幕“${cue.text}”的当前文字无法与保留词时间戳可靠对应，已隐藏跨剪切部分。` });

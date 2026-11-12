@@ -16,3 +16,7 @@
 .assistant-api-settings summary { cursor: pointer; font-weight: 600; }
 .assistant-api-settings label { display: grid; grid-template-columns: 66px minmax(0, 1fr); align-items: center; gap: 8px; margin: 8px 0; }
 .assistant-api-settings input, .assistant-api-settings select { min-width: 0; width: 100%; padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-soft); color: var(--ink); user-select: text; }
+.assistant-api-advanced { margin: 10px 0; }
+.assistant-api-advanced summary { color: var(--muted); font-weight: 400; }
+.assistant-intro-option { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.assistant-intro-option input[type=number] { width: 62px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-soft); color: var(--ink); }

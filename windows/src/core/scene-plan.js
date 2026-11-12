@@ -7,11 +7,22 @@ const { makeScreenMotionClip } = require('./screen-motion');
 // 成片时间分镜一次性执行，生成的片段 ID 由编辑器决定，不要求模型猜测分割后的 ID。
 function applyScenePlan(project, operation) {
   const requested = operation.scenes;
-  if (Object.keys(operation).some((key) => !['type', 'scenes'].includes(key)) || !Array.isArray(requested)
+  if (Object.keys(operation).some((key) => !['type', 'trimStart', 'scenes'].includes(key)) || !Array.isArray(requested)
     || !requested.length || requested.length > 100) throw new Error('分镜方案需要 1 到 100 个片段');
   if (!project.media?.camera) throw new Error('这个项目没有摄像头素材，无法应用人像分镜');
   if (project.timeline.cameraMotionClips?.length) throw new Error('已有摄像头运镜会覆盖分镜，请先移除相关运镜再应用');
-  const original = project.timeline.segments;
+  const before = project.timeline.segments;
+  const trimStart = operation.trimStart === undefined ? 0 : operation.trimStart;
+  const total = outputDuration(before);
+  if (!Number.isFinite(trimStart) || trimStart < 0 || trimStart > total - MIN_SEGMENT) throw new Error('试音裁切秒数必须保留至少 0.1 秒成片');
+  let skipped = 0;
+  const original = before.flatMap((segment) => {
+    const end = skipped + segmentOutputDuration(segment);
+    const start = Math.max(skipped, trimStart);
+    const next = end > start + 1e-7 ? [{ ...segment, sourceStart: segment.sourceStart + (start - skipped) * segment.speed }] : [];
+    skipped = end;
+    return next;
+  });
   const duration = outputDuration(original);
   const scenes = [];
   let cursor = 0;
@@ -39,8 +50,10 @@ function applyScenePlan(project, operation) {
       const sourceStart = segment.sourceStart + (start - outputStart) * segment.speed;
       const sourceEnd = segment.sourceStart + (end - outputStart) * segment.speed;
       if (sourceEnd - sourceStart < MIN_SEGMENT - 1e-6) throw new Error('分镜切点距离已有剪辑点太近，请合并相邻短段后重试');
-      segments.push({ ...segment, id: pieces++ ? uid() : segment.id, sourceStart, sourceEnd,
-        camera: { ...segment.camera, layout: scene.mode === 'portrait' ? 'fullscreen' : 'shape' } });
+      const next = { ...segment, id: pieces++ ? uid() : segment.id, sourceStart, sourceEnd,
+        camera: { ...segment.camera, layout: scene.mode === 'portrait' ? 'fullscreen' : 'shape' } };
+      if (pieces > 1) delete next.openingSequence;
+      segments.push(next);
       if (scene.mode === 'screen3d') {
         if (original.some((other) => other !== segment && other.sourceStart < sourceEnd - 1e-6 && other.sourceEnd > sourceStart + 1e-6)) {
           throw new Error('3D 区间的素材在时间线上重复使用，请先分别处理，避免影响其它片段');
@@ -49,7 +62,7 @@ function applyScenePlan(project, operation) {
           && clip.timing.startTime + clip.timing.duration + (clip.timing.returnDuration || 0) > sourceStart + 1e-6)) {
           throw new Error('分镜的 3D 区间与已有屏幕运镜重叠，请调整区间后重试');
         }
-        const transition = Math.min(0.4 * segment.speed, (sourceEnd - sourceStart) / 4);
+        const transition = Math.min(0.8 * segment.speed, (sourceEnd - sourceStart) / 4, 5);
         effects.push(makeScreenMotionClip({ timing: { startTime: sourceStart, duration: sourceEnd - sourceStart - transition,
           leadInDuration: transition, returnDuration: transition, easing: 'cubic' },
         target: { position: project.canvas.contentPosition, scale: project.canvas.contentScale,
@@ -61,7 +74,7 @@ function applyScenePlan(project, operation) {
   project.timeline.segments = segments;
   project.timeline.screenMotionClips = [...(project.timeline.screenMotionClips || []), ...effects];
   project.camera.isHidden = false;
-  return { sceneCount: scenes.length, segmentCount: segments.length, screen3DCount: effects.length };
+  return { sceneCount: scenes.length, segmentCount: segments.length, screen3DCount: effects.length, trimmedStart: trimStart };
 }
 
 module.exports = { applyScenePlan };

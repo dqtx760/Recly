@@ -14,7 +14,7 @@ body { display: grid; grid-template-rows: 58px minmax(0, 1fr) minmax(280px, 36vh
 .win-btn.close:hover { background: #E81123; color: #FFFFFF; }
 
 .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 480px; gap: 16px; padding: 4px 18px 14px; min-height: 0; }
-.rail { flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); }
+.rail { flex: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); }
 .rail button { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0 6px; border-radius: 9px; font-size: 11.5px; color: var(--muted); }
 .rail button svg.icon { width: 21px; height: 21px; }
 .rail button:hover { color: var(--ink); }
@@ -119,6 +119,8 @@ body { display: grid; grid-template-rows: 58px minmax(0, 1fr) minmax(280px, 36vh
 .frame-tabs button:hover { background: var(--panel-soft); color: var(--ink); }
 .frame-tabs button.active { background: var(--ink); color: #fff; }
 .frame-tabs button:focus-visible, .mockup-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.other-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.opening-scope-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .frame-tab-panel { padding-bottom: 8px; }
 .mockup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
 .mockup-option { min-width: 0; padding: 7px; border-radius: 11px; background: var(--panel-soft); box-shadow: inset 0 0 0 1px var(--line); text-align: left; }

@@ -102,7 +102,11 @@ function cutRanges(project, ranges, keep) {
       }
     }
     if (pieces.length !== 1 || pieces[0].sourceStart !== segment.sourceStart || pieces[0].sourceEnd !== segment.sourceEnd) changedIds.push(segment.id);
-    pieces.forEach((piece, index) => next.push({ ...segment, id: index === 0 ? segment.id : uid(), ...piece }));
+    pieces.forEach((piece, index) => {
+      const split = { ...segment, id: index === 0 ? segment.id : uid(), ...piece };
+      if (index > 0) delete split.openingSequence;
+      next.push(split);
+    });
   }
   if (!next.length) fail('invalid_operation', '操作会删除全部保留片段');
   project.timeline.segments = next;
