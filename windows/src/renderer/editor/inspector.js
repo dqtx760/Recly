@@ -315,6 +315,7 @@ class Inspector {
     this.refreshers = [];
     const tab = TABS.find((item) => item.id === this.tab) || { label: this.tab === 'overlays' ? '画面效果' : this.tab };
     this.title.textContent = tab.label;
+    if (this.assistantControls) this.assistantControls.hidden = this.tab !== 'assistant';
     const context = this.tab === 'canvas' ? `canvas:${this.canvasTab}`
       : this.tab === 'motion' ? `motion:${this.motionMode}` : this.tab;
     if (this.renderedContext) this.scrollPositions.set(this.renderedContext, this.root.scrollTop);

@@ -20,6 +20,13 @@ const EFFECT_POOL_KEYS = {
   sticker: 'stickerClips',
 };
 
+function wheelPixels(event, axis, scroller) {
+  const delta = event[axis] || 0;
+  if (event.deltaMode === 1) return delta * 40;
+  if (event.deltaMode === 2) return delta * (axis === 'deltaY' ? scroller.clientHeight : scroller.clientWidth);
+  return delta;
+}
+
 class TimelineView {
   constructor(store, preview, nodes) {
     this.store = store;
@@ -44,11 +51,7 @@ class TimelineView {
       if (reason === 'project' && this.displayMode === 'waveform') this.loadWaveforms();
     });
     nodes.slider.addEventListener('input', () => this.setZoom(Number(nodes.slider.value)));
-    nodes.scroller.addEventListener('wheel', (event) => {
-      if (!event.ctrlKey) return;
-      event.preventDefault();
-      this.setZoom(clamp(this.zoomLevel - Math.sign(event.deltaY) * 0.06, 0, 1), event.clientX);
-    }, { passive: false });
+    nodes.scroller.addEventListener('wheel', (event) => this.handleWheel(event), { passive: false });
 
     nodes.ruler.addEventListener('pointerdown', (event) => this.scrub(event));
     for (const lane of [nodes.subtitles, nodes.screen, nodes.zoom]) {
@@ -80,6 +83,24 @@ class TimelineView {
   get segments() { return this.store.project.timeline.segments; }
 
   get duration() { return timeline.outputDuration(this.segments); }
+
+  handleWheel(event) {
+    const { scroller } = this.nodes;
+    if (event.altKey) {
+      event.preventDefault();
+      const horizontal = wheelPixels(event, 'deltaX', scroller);
+      scroller.scrollLeft += horizontal || wheelPixels(event, 'deltaY', scroller);
+      return;
+    }
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    const delta = wheelPixels(event, 'deltaY', scroller);
+    if (!delta) return;
+    // Trackpads send many small wheel events; scale those gently while keeping
+    // a mouse-wheel notch close to the existing slider step.
+    const step = 0.06 * Math.max(0.25, Math.min(Math.abs(delta) / 100, 1.5));
+    this.setZoom(clamp(this.zoomLevel - Math.sign(delta) * step, 0, 1), event.clientX);
+  }
 
   setDisplayMode(mode) {
     if (!['frames', 'waveform'].includes(mode)) return false;

@@ -11,3 +11,8 @@
 .assistant-composer { display: grid; gap: 8px; padding-bottom: 4px; }
 .assistant-composer textarea { width: 100%; min-height: 70px; max-height: 180px; padding: 9px; resize: vertical; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-soft); color: var(--ink); user-select: text; }
 .assistant-actions [hidden] { display: none; }
+.assistant-api-settings { flex: none; border: 1px solid var(--line); padding: 10px; border-radius: 9px; }
+.assistant-api-settings[hidden] { display: none; }
+.assistant-api-settings summary { cursor: pointer; font-weight: 600; }
+.assistant-api-settings label { display: grid; grid-template-columns: 66px minmax(0, 1fr); align-items: center; gap: 8px; margin: 8px 0; }
+.assistant-api-settings input, .assistant-api-settings select { min-width: 0; width: 100%; padding: 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-soft); color: var(--ink); user-select: text; }

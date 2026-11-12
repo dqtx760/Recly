@@ -61,7 +61,11 @@ body { display: grid; grid-template-rows: 58px minmax(0, 1fr) minmax(280px, 36vh
 }
 
 .inspector { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.inspector h2 { margin: 0; padding: 16px 18px 12px; font-size: 16px; border-bottom: 1px solid var(--line); }
+.inspector-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.inspector h2 { margin: 0; padding: 0; font-size: 16px; }
+.assistant-head-controls { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.assistant-head-controls[hidden] { display: none; }
+.assistant-head-controls select { min-width: 90px; max-width: 140px; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
 #inspector { flex: 1; overflow-y: auto; padding: 4px 18px 20px; }
 .section { padding-top: 16px; }
 .section > h3 { margin: 0 0 10px; font-size: 13px; font-weight: 700; }

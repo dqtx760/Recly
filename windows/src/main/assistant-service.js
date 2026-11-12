@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { StringDecoder } = require('node:string_decoder');
+const { createApiConfigStore, requestAssistantApi } = require('./assistant-api');
 
 const SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -25,10 +26,11 @@ reply说明实际计划，不承诺不支持的功能。operationsJson是JSON数
 {type:'audio',settings:{microphoneVolume,systemVolume,isMicrophoneMuted,isSystemMuted},segmentId?} 全局或片段音量。100%=1，麦克风0到4，系统音0到1。
 {type:'camera',patch:{layout,shape,size,position,roundness,isHidden,isMirrored,borderWidth,shadowStrength,scaleDuringZoom,contentScale,contentPosition}} 修改全局摄像头，只传需改字段。layout为shape或fullscreen；shape为square/circle/horizontal/vertical/original；size为0.01到1，position和contentPosition={x,y}为0到1，roundness/shadowStrength为0到1，contentScale为0.1到5。
 {type:'camera',segmentId,patch:{layout,shape}} 仅修改指定录屏片段的摄像头形状/全屏，不能带其它字段。用户明确说选中片段时用selection中的录屏segment ID。
+{type:'scene_plan',scenes:[{start,end,mode}]} 全视频自动分镜唯一新增的操作。start/end均为成片秒；场景必须按时间排序、无重叠，并完整覆盖从0到成片总时长。mode仅为portrait（全屏人物）、presenter（人物与屏幕讲解布局）或screen3d（屏幕3D运镜）。每段建议至少3秒，避免频繁切换。应用时软件会确定性分割录屏段并设置该段摄像头形状；screen3d会新增屏幕运镜片段。保持原视频总时长、音轨和字幕不变。无摄像头时拒绝场景计划。若已有摄像头运镜或screen3d会与已有运镜/重复源区间冲突，拒绝计划，不覆盖原运镜。用户要求分析整个视频或自动分镜时，只返回一条scene_plan，不要通过split后编造片段ID。
 {type:'canvas',patch:{aspectRatio,padding,cornerRadius,shadowStrength,contentScale,contentPosition,borderWidth,borderColor,background}} 只传需改字段。aspectRatio=adaptive/16:9/4:3/9:16/1:1/3:4/2.39:1；padding/cornerRadius为1080p像素，background={kind:'color',color:'#RRGGBB'}，shadowStrength为0到1。
 字幕修改放subtitlePatchJson，如 {cues:[{id,text}]} 或 {enabled:true,style:{fontSize,color,backgroundColor,backgroundOpacity,baselineY,fontFamily,bold,animation,animationDuration}}；颜色为#RRGGBB，字号12到160，opacity0到1，baselineY0.1到0.9。fontFamily为DogSC PuHui/Microsoft YaHei UI/SimSun/KaiTi，bold为布尔，animation为none/fade/slide/pop，animationDuration为0.1到1.5秒，全局应用所有字幕。文字修改无需编造词时间。原词时间无法可靠映射时软件会标记失效。
 撤销或重做用historyAction='undo'/'redo'，必须同时返回空操作和空字幕patch。无修改时historyAction='none'。
-剪辑参数以源时间存储。用户说成片前几秒时根据timeline片段顺序和speed换算，不能把成片时间直接当源时间。不能识别视频内容、听音频、生成字幕、添加不存在的素材或导出；需要这些操作时引导用户使用原有面板。`;
+剪辑参数以源时间存储。用户说成片前几秒时根据timeline片段顺序和speed换算，不能把成片时间直接当源时间。场景计划的start/end必须使用成片时间并覆盖完整成片。场景分析只可依据工程参数和已有字幕，模型无法观看视频画面或听音频；在回复中说明判断基于字幕/参数，并为每段列出成片时间、模式和一句理由。没有字幕时不得猜测分镜，先请用户使用字幕识别。不能听音频、生成字幕、添加不存在的素材或导出；需要这些操作时引导用户使用原有面板。`;
 
 function clean(value) {
   if (Array.isArray(value)) return value.map(clean);
@@ -42,18 +44,20 @@ function promptFor(payload) {
   if (!payload.project || typeof payload.project !== 'object') throw new Error('缺少当前工程');
   const p = payload.project;
   const context = clean({ media: { screen: p.media?.screen, camera: p.media?.camera, microphone: Boolean(p.media?.microphone), systemAudio: Boolean(p.media?.systemAudio) },
-    timeline: p.timeline, canvas: p.canvas, camera: p.camera, audio: p.audio, subtitles: p.subtitles, zoomAnimations: p.zoomAnimations });
+    timeline: p.timeline, canvas: p.canvas, camera: p.camera, motion: p.motion, audio: p.audio, subtitles: p.subtitles, zoomAnimations: p.zoomAnimations });
   const history = (Array.isArray(payload.history) ? payload.history : []).slice(-12)
     .filter((item) => ['user', 'assistant'].includes(item?.role) && typeof item.content === 'string')
     .map((item) => ({ role: item.role, content: item.content.slice(0, 8000) }));
   const data = JSON.stringify({ project: context, history, playhead: payload.playhead, selection: payload.selection, message: payload.message });
   if (Buffer.byteLength(data) > 600000) throw new Error('工程参数与字幕过多，暂时无法发送给本机助手');
-  return `${INSTRUCTIONS}\n本次数据：\n${data}`;
+  return `${INSTRUCTIONS}\n输出格式的 JSON Schema：\n${JSON.stringify(SCHEMA)}\n本次数据：\n${data}`;
 }
 
 function parseResult(output, backend) {
   let value;
-  if (backend === 'claude') {
+  if (backend === 'api') {
+    value = JSON.parse(output.trim());
+  } else if (backend === 'claude') {
     const envelope = JSON.parse(output.trim());
     if (envelope.is_error) throw new Error('Claude 执行失败，请检查本机登录与模型配置');
     value = envelope.structured_output || JSON.parse(envelope.result);
@@ -68,7 +72,9 @@ function parseResult(output, backend) {
     if (!finalText) throw new Error('Codex 没有返回完整回复');
     value = JSON.parse(finalText);
   }
-  if (!value || typeof value.reply !== 'string' || value.reply.length > 16000 || typeof value.operationsJson !== 'string'
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 4 || !['reply', 'operationsJson', 'subtitlePatchJson', 'historyAction'].every((key) => Object.hasOwn(value, key))
+    || typeof value.reply !== 'string' || value.reply.length > 16000 || typeof value.operationsJson !== 'string'
     || typeof value.subtitlePatchJson !== 'string' || !['none', 'undo', 'redo'].includes(value.historyAction)) throw new Error('智能体回复格式无效');
   const operations = JSON.parse(value.operationsJson), subtitlePatch = JSON.parse(value.subtitlePatchJson);
   if (!Array.isArray(operations) || operations.length > 100 || !subtitlePatch || typeof subtitlePatch !== 'object' || Array.isArray(subtitlePatch)) throw new Error('智能体编辑指令格式无效');
@@ -106,18 +112,63 @@ function mcpOverrides(env) {
   return [...new Set(names)].flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]);
 }
 
-function createAssistantService({ workDirectory, spawnProcess = spawn, detectBackends = findBackends, timeoutMs = 180000, env = process.env } = {}) {
+function createAssistantService({ workDirectory, spawnProcess = spawn, detectBackends = findBackends, timeoutMs = 180000, env = process.env,
+  safeStorage, fetchImpl = globalThis.fetch } = {}) {
   const active = new Map();
   const directory = workDirectory || path.join(os.tmpdir(), 'recly-assistant');
   fs.mkdirSync(directory, { recursive: true });
   const schemaPath = path.join(directory, 'response-schema.json');
   fs.writeFileSync(schemaPath, JSON.stringify(SCHEMA));
-  const detect = () => detectBackends(env).map(({ id, label, executable }) => ({ id, label, available: Boolean(executable) }));
+  const apiConfig = createApiConfigStore({ filePath: path.join(directory, 'api-config.json'), safeStorage });
+  const detect = () => [...detectBackends(env).map(({ id, label, executable }) => ({ id, label, available: Boolean(executable) })),
+    { id: 'api', label: 'API Key', available: true }];
+
+  function sendApi(prompt, owner) {
+    let credentials;
+    try { credentials = apiConfig.loadForRequest(); }
+    catch (error) { return Promise.reject(error); }
+    return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      let timer, finished = false;
+      const done = (error, result) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        active.delete(owner);
+        if (error) reject(error); else resolve(result);
+      };
+      active.set(owner, { cancel: () => {
+        done(new Error('已停止本次请求'));
+        controller.abort();
+      } });
+      timer = setTimeout(() => {
+        done(new Error('智能体回复超时，已停止，请稍后重试'));
+        controller.abort();
+      }, timeoutMs);
+      Promise.resolve().then(() => requestAssistantApi(credentials, credentials.apiKey, prompt, {
+        fetchImpl, signal: controller.signal, abort: () => controller.abort(),
+      })).then((output) => {
+        let result;
+        try { result = parseResult(output, 'api'); }
+        catch { done(new Error('API 未返回符合要求的编辑方案，请检查模型和接口设置')); return; }
+        if (credentials.apiKey.length >= 8 && JSON.stringify(result).includes(credentials.apiKey)) {
+          done(new Error('API 响应包含敏感配置，已隐藏内容'));
+          return;
+        }
+        done(null, result);
+      }).catch((error) => {
+        if (error?.safeAssistantMessage) done(error);
+        else done(new Error('API 调用失败，请检查接口配置和网络'));
+      });
+    });
+  }
+
   function send(payload, owner = 'default') {
     if (active.has(owner)) return Promise.reject(new Error('当前助手仍在处理，请先停止或等待完成'));
     let prompt, backend;
     try {
       prompt = promptFor(payload);
+      if (payload.backend === 'api') return sendApi(prompt, owner);
       backend = detectBackends(env).find((item) => item.id === payload.backend && item.executable);
       if (!backend) throw new Error('未找到所选智能体，请安装并登录后重新检测');
     } catch (error) { return Promise.reject(error); }
@@ -172,7 +223,15 @@ function createAssistantService({ workDirectory, spawnProcess = spawn, detectBac
   }
   function cancel(owner = 'default') { active.get(owner)?.cancel(); }
   function close() { for (const task of [...active.values()]) task.cancel(); }
-  return { detect, send, cancel, close };
+  return {
+    detect,
+    send,
+    cancel,
+    close,
+    getApiConfig: () => apiConfig.getConfig(),
+    saveApiConfig: (payload) => apiConfig.saveConfig(payload),
+    clearApiConfig: () => apiConfig.clearKey(),
+  };
 }
 
 module.exports = { createAssistantService, findBackends, promptFor, parseResult, SCHEMA };

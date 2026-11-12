@@ -1,6 +1,7 @@
 'use strict';
 
 const timeline = require('./timeline');
+const { applyScenePlan } = require('./scene-plan');
 const { uid, ASPECT_RATIOS, PATTERN_PRESETS, CAMERA_SHAPES, ZOOM_EASINGS } = require('./model');
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -305,6 +306,7 @@ function applyOne(project, operation) {
   object(operation, 'operation');
   if (typeof operation.type !== 'string') fail('invalid_params', 'operation.type 缺失');
   switch (operation.type) {
+    case 'scene_plan': return applyScenePlan(project, operation);
     case 'split': return applySplit(project, operation);
     case 'trim': return applyTrim(project, operation);
     case 'remove': {

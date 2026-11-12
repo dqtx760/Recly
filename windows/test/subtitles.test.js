@@ -8,6 +8,9 @@ const { createMockCanvas, drawSubtitleText } = require('../src/renderer/editor/r
 let semanticWords;
 let alignedWordTexts;
 let replaceCueText;
+let formatOutputTime;
+let clearAllSubtitles;
+let orderCuesByOutput;
 const originalModuleLoad = Module._load;
 const originalLocation = global.location;
 global.location = { search: '' };
@@ -16,7 +19,7 @@ Module._load = function loadWithoutElectron(request, parent, isMain) {
   return originalModuleLoad.call(this, request, parent, isMain);
 };
 try {
-  ({ semanticWords, alignedWordTexts, replaceCueText } = require('../src/renderer/editor/subtitles-panel'));
+  ({ semanticWords, alignedWordTexts, replaceCueText, formatOutputTime, clearAllSubtitles, orderCuesByOutput } = require('../src/renderer/editor/subtitles-panel'));
 } finally {
   Module._load = originalModuleLoad;
   global.location = originalLocation;
@@ -80,6 +83,33 @@ assert.equal(replaceCueText(literal, '', 'x'), 0);
 assert.equal(replaceCueText(literal, 'a', 'a'), 0);
 assert.equal(replaceCueText(literal, '$&', ''), 2);
 assert.equal(literal.text, 'a a');
+
+assert.equal(formatOutputTime(1.9), '0:01');
+assert.equal(formatOutputTime(65), '1:05');
+assert.equal(formatOutputTime(3661), '1:01:01');
+let clearMutations = 0;
+let clearedSelection = false;
+const clearStore = {
+  project: { subtitles: { cues: [{ id: 'one' }, { id: 'two' }] } },
+  selection: { type: 'subtitle', id: 'one' },
+  mutate(change) { clearMutations += 1; change(this.project); },
+  select(value) { this.selection = value; clearedSelection = value === null; },
+};
+const subtitleState = { candidate: [{ id: 'old-candidate' }], candidateTrack: 'microphone', confirmReplace: true };
+assert.equal(clearAllSubtitles(clearStore, subtitleState), true);
+assert.equal(clearMutations, 1, '清空全部字幕应是一个可撤销的工程变更');
+assert.deepEqual(clearStore.project.subtitles.cues, []);
+assert.equal(clearedSelection, true, '清空后应取消已经失效的字幕选择');
+assert.equal(subtitleState.candidate, null, '清空字幕时丢弃先前的识别候选');
+assert.equal(subtitleState.candidateTrack, null);
+assert.equal(subtitleState.confirmReplace, false);
+assert.equal(clearAllSubtitles(clearStore), false, '空字幕轨上禁用重复清空');
+assert.equal(clearMutations, 1);
+const ordered = orderCuesByOutput([{ id: 'later' }, { id: 'missing' }, { id: 'earlier' }], [
+  { id: 'earlier', start: 1.5 }, { id: 'later', start: 4 }, { id: 'earlier', start: 6 },
+]);
+assert.deepEqual(ordered.cues.map(({ id }) => id), ['earlier', 'later', 'missing'], '按首次成片出现时间排序，未保留字幕排到末尾');
+assert.equal(ordered.firstOccurrences.get('earlier').start, 1.5, '重复片段使用首次出现时间展示');
 
 const project = makeProject({
   name: '映射',

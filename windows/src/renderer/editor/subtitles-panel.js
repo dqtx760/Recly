@@ -29,7 +29,6 @@ function panelState(inspector) {
       jobId: null,
       starting: false,
       jobTrack: null,
-      hadSubtitlesAtStart: false,
       progressNode: null,
       candidate: null,
       candidateTrack: null,
@@ -96,6 +95,37 @@ function replaceCueText(cue, query, replacement) {
   else cue.alignment = 'stale';
   cue.text = next;
   return parts.length - 1;
+}
+
+function formatOutputTime(seconds) {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const rest = String(value % 60).padStart(2, '0');
+  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${rest}` : `${minutes}:${rest}`;
+}
+
+function clearAllSubtitles(store, state) {
+  if (!store.project.subtitles?.cues?.length) return false;
+  if (state) {
+    state.candidate = null;
+    state.candidateTrack = null;
+    state.confirmReplace = false;
+  }
+  store.mutate((draft) => { draft.subtitles.cues = []; });
+  if (store.selection?.type === 'subtitle') store.select(null);
+  return true;
+}
+
+function orderCuesByOutput(cues, mapped) {
+  const firstOccurrences = new Map();
+  for (const item of mapped) {
+    if (!firstOccurrences.has(item.id)) firstOccurrences.set(item.id, item);
+  }
+  return {
+    cues: [...cues].sort((a, b) => (firstOccurrences.get(a.id)?.start ?? Infinity) - (firstOccurrences.get(b.id)?.start ?? Infinity)),
+    firstOccurrences,
+  };
 }
 
 function numberInput(value, { min = 0, max, step = 0.01, label } = {}) {
@@ -255,7 +285,7 @@ function renderSubtitlesPanel(inspector) {
             if (inspector.tab === 'subtitles') inspector.render();
             return;
           }
-          if (!state.hadSubtitlesAtStart && store.project.subtitles.cues.length === 0) {
+          if (store.project.subtitles.cues.length === 0) {
             const cues = state.candidate.map((cue) => ({ ...cue, id: cue.id || uid() }));
             store.mutate((draft) => {
               draft.subtitles.cues = cues;
@@ -285,7 +315,6 @@ function renderSubtitlesPanel(inspector) {
     if (state.starting || state.jobId) return;
     state.starting = true;
     state.jobTrack = state.track;
-    state.hadSubtitlesAtStart = store.project.subtitles.cues.length > 0;
     state.candidate = null;
     state.confirmReplace = false;
     state.status = '正在启动识别…';
@@ -433,13 +462,27 @@ function renderSubtitlesPanel(inspector) {
   panel.append(element('details', { class: 'subtitles-section subtitles-search', hidden: state.tab !== 'subtitles' },
     element('summary', {}, '查找替换'), field('查找', search), field('替换为', replacement),
     element('div', { class: 'subtitles-actions' }, replaceAll), searchStatus));
+  const { cues: orderedCues, firstOccurrences } = orderCuesByOutput(subtitles.cues, mapped);
+  const clearAll = button('清空全部', () => {
+    if (state.starting || state.jobId || !clearAllSubtitles(store, state)) return;
+    state.status = '已清空全部字幕，可撤销恢复。';
+    inspector.render();
+  }, 'ghost');
+  clearAll.disabled = subtitles.cues.length === 0 || Boolean(state.starting || state.jobId);
   panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'subtitles' },
-    element('div', { class: 'subtitles-list-heading' }, element('h4', {}, `字幕条目 · ${subtitles.cues.length}`),
-      element('div', { class: 'subtitles-actions' }, button('添加', addCue))),
+    element('div', { class: 'subtitles-list-heading' }, element('h4', {}, `字幕 · ${subtitles.cues.length}`),
+      element('div', { class: 'subtitles-actions' },
+        clearAll, button('添加', addCue))),
     warningCount ? note(`${warningCount} 条字幕跨过剪切点，需检查时间后才会显示。`, 'warning') : null,
-    subtitles.cues.length ? subtitles.cues.map((cue, index) => {
-      const text = element('textarea', { rows: 2, 'aria-label': `第 ${index + 1} 条字幕文字`, spellcheck: 'false' });
+    subtitles.cues.length ? orderedCues.map((cue, index) => {
+      const text = element('textarea', { rows: 2, 'aria-label': `字幕 ${index + 1} 文字`, spellcheck: 'false' });
       text.value = cue.text;
+      const resizeText = () => {
+        text.style.height = 'auto';
+        text.style.height = `${Math.max(text.scrollHeight, 42)}px`;
+      };
+      text.addEventListener('input', resizeText);
+      requestAnimationFrame(resizeText);
       text.addEventListener('change', () => updateCue(cue.id, (target, value) => {
         const oldCount = semanticWords(target.text, value.language).length;
         const nextWords = semanticWords(text.value, value.language);
@@ -470,12 +513,16 @@ function renderSubtitlesPanel(inspector) {
       });
       const remove = button('×', () => { write((value) => { value.cues = value.cues.filter((item) => item.id !== cue.id); }); if (store.selection?.type === 'subtitle' && store.selection.id === cue.id) store.select(null); }, 'danger');
       remove.title = '删除字幕';
-      const occurrence = mapped.find((item) => item.id === cue.id);
+      const occurrences = mapped.filter((item) => item.id === cue.id);
+      const occurrence = firstOccurrences.get(cue.id);
       const selected = store.selection?.type === 'subtitle' && store.selection.id === cue.id;
       const locate = element('button', {
-        type: 'button', class: 'subtitle-cue-index', title: occurrence ? '定位并编辑字幕' : '此字幕未出现在成片中',
+        type: 'button', class: 'subtitle-cue-time',
+        title: !occurrence ? '此字幕未出现在成片中' : occurrences.length > 1
+          ? `此字幕在成片中出现 ${occurrences.length} 次。定位到此处后，可在时间线上选择其他位置。` : '定位并编辑字幕',
+        'aria-label': occurrence ? `定位至 ${formatOutputTime(occurrence.start)}${occurrences.length > 1 ? `，成片中共出现 ${occurrences.length} 次` : ''}，${cue.text}` : `字幕未出现在成片中，${cue.text}`,
         onclick: () => { store.select({ type: 'subtitle', id: cue.id }); if (occurrence) inspector.preview.seek(occurrence.start); },
-      }, String(index + 1));
+      }, occurrence ? formatOutputTime(occurrence.start) : '—');
       const node = element('article', { class: `subtitle-cue${selected ? ' selected' : ''}`, 'data-cue-id': cue.id },
         element('div', { class: 'subtitle-cue-row' }, locate, text, remove),
         selected ? element('div', { class: 'subtitle-times' }, field('原片起点（秒）', start), field('原片终点（秒）', end)) : null);
@@ -488,4 +535,4 @@ function renderSubtitlesPanel(inspector) {
   return [panel];
 }
 
-module.exports = { renderSubtitlesPanel, semanticWords, alignedWordTexts, replaceCueText };
+module.exports = { renderSubtitlesPanel, semanticWords, alignedWordTexts, replaceCueText, formatOutputTime, clearAllSubtitles, orderCuesByOutput };

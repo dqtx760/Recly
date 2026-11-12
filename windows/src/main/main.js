@@ -1,7 +1,7 @@
 'use strict';
 // DogSC Windows 版主进程：窗口管理、录制调度、项目库与导出混流。
 
-const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShortcut, session, shell, Menu, Tray, clipboard, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShortcut, session, shell, Menu, Tray, clipboard, nativeImage, safeStorage } = require('electron');
 // 当前 Windows 运行环境下硬解视频预览会停帧；关闭视频解码加速，GPU 画布仍保持启用。
 if (process.platform === 'win32') app.commandLine.appendSwitch('disable-accelerated-video-decode');
 const fs = require('node:fs');
@@ -106,7 +106,7 @@ let agentService = null;
 let assistantService = null;
 
 function getAssistantService() {
-  if (!assistantService) assistantService = createAssistantService({ workDirectory: path.join(app.getPath('userData'), 'assistant-work') });
+  if (!assistantService) assistantService = createAssistantService({ workDirectory: path.join(app.getPath('userData'), 'assistant-work'), safeStorage });
   return assistantService;
 }
 let transcription = null;
@@ -671,6 +671,18 @@ function listWallpapers() {
 }
 
 function registerIpc() {
+  ipcMain.handle('assistant:api-config', (event) => {
+    if (!editorDirectoryForSender(event.sender)) throw new Error('请从编辑器打开 AI 助手');
+    return getAssistantService().getApiConfig();
+  });
+  ipcMain.handle('assistant:api-save', (event, payload = {}) => {
+    if (!editorDirectoryForSender(event.sender)) throw new Error('请从编辑器打开 AI 助手');
+    return getAssistantService().saveApiConfig(payload);
+  });
+  ipcMain.handle('assistant:api-clear', (event) => {
+    if (!editorDirectoryForSender(event.sender)) throw new Error('请从编辑器打开 AI 助手');
+    return getAssistantService().clearApiConfig();
+  });
   ipcMain.handle('assistant:detect', (event) => {
     if (!editorDirectoryForSender(event.sender)) throw new Error('请从编辑器打开 AI 助手');
     return getAssistantService().detect();

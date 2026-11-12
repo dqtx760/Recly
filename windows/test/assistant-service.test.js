@@ -6,13 +6,20 @@ const { PassThrough } = require('node:stream');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createAssistantService, promptFor, parseResult } = require('../src/main/assistant-service');
+const { createAssistantService, promptFor, parseResult, SCHEMA } = require('../src/main/assistant-service');
 
 const plan = { reply: '已准备好圆形摄像头', operationsJson: '[{"type":"camera","patch":{"shape":"circle"}}]', subtitlePatchJson: '{}', historyAction: 'none' };
 const event = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(plan) } });
 const payload = { backend: 'codex', message: '改为圆形', project: { media: { screen: { duration: 6, file: 'private-source.mp4' } }, capture: { token: 'private-token' }, camera: { shape: 'square' }, timeline: { segments: [] } } };
+const apiKey = 'sk-test-recly-secret-123';
+const safeStorage = {
+  isEncryptionAvailable: () => true,
+  encryptString: (value) => Buffer.from(`encrypted:${value}`),
+  decryptString: (value) => Buffer.from(value).toString('utf8').slice('encrypted:'.length),
+};
 const prompt = promptFor(payload);
 assert.ok(!prompt.includes('private-source.mp4') && !prompt.includes('private-token'));
+assert.ok(prompt.includes(JSON.stringify(SCHEMA)), '发给 API 的 prompt 必须明确包含 JSON Schema');
 assert.equal(parseResult(event, 'codex').operations[0].patch.shape, 'circle');
 assert.equal(parseResult(JSON.stringify({ structured_output: plan }), 'claude').historyAction, 'none');
 assert.throws(() => parseResult('{"type":"turn.failed"}', 'codex'));
@@ -34,7 +41,10 @@ async function main() {
       return child;
     },
   });
-  assert.deepEqual(service.detect(), [{ id: 'codex', label: 'Codex', available: true }]);
+  assert.deepEqual(service.detect(), [
+    { id: 'codex', label: 'Codex', available: true },
+    { id: 'api', label: 'API Key', available: true },
+  ]);
   const first = service.send(payload, 1);
   await assert.rejects(service.send(payload, 1), /仍在处理/);
   const bytes = Buffer.from(event);
@@ -68,6 +78,91 @@ async function main() {
   });
   await assert.rejects(short.send(payload), /超时/);
   assert.equal(timeoutChild.killed, true);
-  console.log('本机AI后端解析、上下文脱敏、取消、超时和进程边界测试通过');
+
+  const apiPayload = { ...payload, backend: 'api' };
+  const apiDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-api-'));
+  let apiRequest;
+  const apiService = createAssistantService({
+    workDirectory: apiDirectory,
+    safeStorage,
+    detectBackends: () => [],
+    fetchImpl: async (url, options) => {
+      apiRequest = { url, options };
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(plan) } }] }), { status: 200 });
+    },
+  });
+  apiService.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'test-model', apiKey });
+  assert.equal(apiService.getApiConfig().apiKey, undefined, '配置 IPC 不返回密钥');
+  assert.equal((await apiService.send(apiPayload, 17)).reply, plan.reply);
+  assert.equal(apiRequest.url, 'https://api.example/v1/chat/completions');
+  assert.equal(apiRequest.options.redirect, 'error');
+  assert.equal(apiRequest.options.headers.authorization, `Bearer ${apiKey}`);
+  assert.equal(apiService.getApiConfig().hasKey, true);
+
+  const apiConfigFile = path.join(apiDirectory, 'api-config.json');
+  const persistedApiConfig = fs.readFileSync(apiConfigFile, 'utf8');
+  assert.ok(!persistedApiConfig.includes(apiKey), 'API Key 不能以明文保存');
+
+  const echoService = createAssistantService({
+    workDirectory: fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-api-echo-')),
+    safeStorage,
+    detectBackends: () => [],
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ ...plan, reply: apiKey }) } }],
+    }), { status: 200 }),
+  });
+  echoService.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'test-model', apiKey });
+  await assert.rejects(echoService.send(apiPayload, 21), (error) => error.message.includes('已隐藏') && !error.message.includes(apiKey));
+
+  let cancelSignal;
+  const pendingService = createAssistantService({
+    workDirectory: fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-api-cancel-')),
+    safeStorage,
+    detectBackends: () => [],
+    fetchImpl: (_url, options) => new Promise((_resolve, reject) => {
+      cancelSignal = options.signal;
+      options.signal.addEventListener('abort', () => reject(new Error(`upstream echoed ${apiKey}`)), { once: true });
+    }),
+  });
+  pendingService.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'test-model', apiKey });
+  const pendingApi = pendingService.send(apiPayload, 18);
+  await new Promise((resolve) => setImmediate(resolve));
+  await assert.rejects(pendingService.send(apiPayload, 18), /仍在处理/);
+  const cliWhileApiPending = pendingService.send(payload, 18);
+  await assert.rejects(cliWhileApiPending, /仍在处理/);
+  pendingService.cancel(18);
+  await assert.rejects(pendingApi, (error) => error.message.includes('停止') && !error.message.includes(apiKey));
+  assert.equal(cancelSignal.aborted, true, '取消 API 请求时应中止 fetch');
+
+  let timeoutSignal;
+  const timedApi = createAssistantService({
+    workDirectory: fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-api-timeout-')),
+    timeoutMs: 5,
+    safeStorage,
+    detectBackends: () => [],
+    fetchImpl: (_url, options) => new Promise((_resolve, reject) => {
+      timeoutSignal = options.signal;
+      options.signal.addEventListener('abort', () => reject(new Error(`upstream echoed ${apiKey}`)), { once: true });
+    }),
+  });
+  timedApi.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'test-model', apiKey });
+  await assert.rejects(timedApi.send(apiPayload, 19), (error) => error.message.includes('超时') && !error.message.includes(apiKey));
+  assert.equal(timeoutSignal.aborted, true, '超时 API 请求时应中止 fetch');
+
+  const corruptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-api-corrupt-'));
+  const corruptConfig = path.join(corruptDirectory, 'api-config.json');
+  fs.writeFileSync(corruptConfig, '{ invalid config');
+  const recoverable = createAssistantService({ workDirectory: corruptDirectory, safeStorage, detectBackends: () => [] });
+  await assert.rejects(Promise.resolve().then(() => recoverable.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'new-model', apiKey: '' })), /输入新的 API Key/);
+  assert.equal(recoverable.saveApiConfig({ protocol: 'openai', baseUrl: 'https://api.example/v1', model: 'new-model', apiKey }).hasKey, true,
+    '提供新密钥时应能覆盖损坏的配置文件');
+  assert.equal(recoverable.getApiConfig().model, 'new-model');
+  fs.writeFileSync(corruptConfig, '{ invalid config again');
+  assert.equal(recoverable.clearApiConfig().hasKey, false, '清除密钥应能重置损坏的配置');
+  assert.equal(recoverable.getApiConfig().baseUrl, 'https://api.openai.com/v1');
+
+  const keyLess = createAssistantService({ workDirectory: fs.mkdtempSync(path.join(os.tmpdir(), 'recly-assistant-api-no-key-')), safeStorage, detectBackends: () => [] });
+  await assert.rejects(keyLess.send(apiPayload, 20), /配置 API Key/);
+  console.log('本机 CLI 与 API 助手解析、上下文脱敏、取消、超时和密钥存储边界测试通过');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });
