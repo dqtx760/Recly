@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const media = require('./ffmpeg');
 const { createAgentService } = require('./agent-service');
+const { createAssistantService } = require('./assistant-service');
 const { TranscriptionManager } = require('./transcription');
 const { RecordingSession, listDisplays, PROJECT_EXTENSION } = require('./recording');
 const { copyProjectToFolder } = require('./project-copy');
@@ -102,6 +103,12 @@ let environment = { ok: false, reason: '正在检查 ffmpeg…' };
 let activeExport = null;
 let activeExportSession = null;
 let agentService = null;
+let assistantService = null;
+
+function getAssistantService() {
+  if (!assistantService) assistantService = createAssistantService({ workDirectory: path.join(app.getPath('userData'), 'assistant-work') });
+  return assistantService;
+}
 let transcription = null;
 let drainingServices = false;
 
@@ -300,7 +307,9 @@ function openEditor(directory) {
   }
   const win = createWindow('editor.html', { width: 1480, height: 940, minWidth: 1100, minHeight: 700, frame: false, title: `${path.basename(directory, PROJECT_EXTENSION)} — Recly` }, { project: directory });
   const editorSender = win.webContents;
+  const editorSenderId = editorSender.id;
   editorSender.once('destroyed', () => {
+    if (assistantService) assistantService.cancel(editorSenderId);
     if (activeExportSession?.sender !== editorSender) return;
     activeExportSession = null;
     // Keep the encoder lock until its process has actually stopped.
@@ -662,6 +671,19 @@ function listWallpapers() {
 }
 
 function registerIpc() {
+  ipcMain.handle('assistant:detect', (event) => {
+    if (!editorDirectoryForSender(event.sender)) throw new Error('请从编辑器打开 AI 助手');
+    return getAssistantService().detect();
+  });
+  ipcMain.handle('assistant:send', (event, payload = {}) => {
+    requireEditorRequest(event, payload.directory);
+    return getAssistantService().send(payload, event.sender.id);
+  });
+  ipcMain.handle('assistant:cancel', (event) => {
+    if (!editorDirectoryForSender(event.sender)) throw new Error('无效的编辑器窗口');
+    if (assistantService) assistantService.cancel(event.sender.id);
+    return true;
+  });
   ipcMain.handle('app:environment', () => ({ ...environment, projectsRoot: projectsRoot(), version: app.getVersion() }));
   ipcMain.on('agent:ready', (event, payload) => { if (agentService) agentService.rendererReady(event.sender, payload); });
   ipcMain.on('agent:response', (event, payload) => { if (agentService) agentService.rendererResponse(event.sender, payload); });
@@ -1206,10 +1228,10 @@ if (!SELF_TEST && !app.requestSingleInstanceLock()) {
         }).catch((error) => console.warn('[DogSC] 显示录制退出提示失败：', error.message || error));
         return;
       }
-      if (drainingServices || (!agentService && !transcription)) return;
+      if (drainingServices || (!agentService && !transcription && !assistantService)) return;
       event.preventDefault();
       drainingServices = true;
-      void Promise.allSettled([agentService && agentService.close(), transcription && transcription.close()])
+      void Promise.allSettled([agentService && agentService.close(), transcription && transcription.close(), assistantService && assistantService.close()])
         .finally(() => app.quit());
     });
     if (SELF_TEST) {

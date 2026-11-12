@@ -178,6 +178,7 @@ Module._load = function loadForInspector(request, parent, isMain) {
   if (request === '../common' && (
     parentPath?.endsWith('renderer\\editor\\inspector.js')
     || parentPath?.endsWith('renderer\\editor\\subtitles-panel.js')
+    || parentPath?.endsWith('renderer\\editor\\assistant-panel.js')
   )) {
     return { element, fileUrl: (file) => file };
   }
@@ -197,7 +198,7 @@ const pendingTests = [];
 console.log('Testing editor inspector groups and controls...');
 
 test('画面设置合并摄像头与样机并保留各分组滚动位置', () => {
-  assert.deepEqual(TABS.map((tab) => tab.id), ['canvas', 'motion', 'subtitles', 'audio', 'cursor']);
+  assert.deepEqual(TABS.map((tab) => tab.id), ['canvas', 'motion', 'subtitles', 'audio', 'cursor', 'assistant']);
   const store = createStore();
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });

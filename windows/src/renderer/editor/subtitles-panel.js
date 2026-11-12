@@ -34,7 +34,7 @@ function panelState(inspector) {
       candidate: null,
       candidateTrack: null,
       confirmReplace: false,
-      tab: 'content',
+      tab: 'recognition',
       query: '',
       replacement: '',
     };
@@ -152,7 +152,7 @@ function renderSubtitlesPanel(inspector) {
     enabled));
 
   panel.append(element('nav', { class: 'subtitles-tabs frame-tabs', 'aria-label': '字幕分组' },
-    [['content', '内容'], ['style', '样式'], ['recognition', '识别']].map(([id, label]) => element('button', {
+    [['recognition', '识别'], ['style', '样式'], ['content', '内容']].map(([id, label]) => element('button', {
       type: 'button', class: state.tab === id ? 'active' : '', 'aria-pressed': String(state.tab === id),
       onclick: () => { state.tab = id; inspector.root.scrollTop = 0; inspector.render(); },
     }, label))));

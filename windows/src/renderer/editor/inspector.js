@@ -11,6 +11,7 @@ const timeline = require('../../core/timeline');
 const { planAutoZoom } = require('../../core/zoom');
 const { isInside } = require('../../core/pointer');
 const { renderSubtitlesPanel } = require('./subtitles-panel');
+const { renderAssistantPanel } = require('./assistant-panel');
 
 const TABS = [
   { id: 'canvas', label: '画面', icon: 'canvas' },
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'subtitles', label: '字幕', icon: 'memo' },
   { id: 'audio', label: '声音', icon: 'speaker' },
   { id: 'cursor', label: '光标', icon: 'cursor' },
+  { id: 'assistant', label: 'AI 助手', icon: 'wand' },
 ];
 
 class Inspector {
@@ -929,6 +931,10 @@ class Inspector {
 
   subtitlesPanel() {
     return renderSubtitlesPanel(this);
+  }
+
+  assistantPanel() {
+    return renderAssistantPanel(this);
   }
 }
 

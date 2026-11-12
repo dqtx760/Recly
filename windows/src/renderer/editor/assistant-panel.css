@@ -1,0 +1,13 @@
+.assistant-panel { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 280px; padding-top: 14px; }
+.assistant-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.assistant-actions select { min-width: 120px; padding: 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); color: var(--ink); }
+.assistant-panel .note { margin: 0; }
+.assistant-messages { flex: 1; min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; user-select: text; }
+.assistant-message { border-radius: 10px; padding: 10px 12px; background: var(--panel-soft); overflow-wrap: anywhere; }
+.assistant-message b { display: block; margin-bottom: 5px; font-size: 11px; color: var(--muted); }
+.assistant-message div { white-space: pre-wrap; line-height: 1.6; }
+.assistant-message.user { background: var(--accent-soft); }
+.assistant-message.error { border: 1px solid var(--danger); }
+.assistant-composer { display: grid; gap: 8px; padding-bottom: 4px; }
+.assistant-composer textarea { width: 100%; min-height: 70px; max-height: 180px; padding: 9px; resize: vertical; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-soft); color: var(--ink); user-select: text; }
+.assistant-actions [hidden] { display: none; }

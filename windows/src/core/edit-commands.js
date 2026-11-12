@@ -190,6 +190,7 @@ const CANVAS_FIELDS = {
 };
 
 const CAMERA_FIELDS = {
+  layout: (value) => { if (!['shape', 'fullscreen'].includes(value)) fail('invalid_params', 'camera.layout 不受支持'); return value; },
   shape: (value) => { if (!own(CAMERA_SHAPES, value)) fail('invalid_params', 'camera.shape 不受支持'); return value; },
   position: (value) => point(value, 'camera.position', 0, 1),
   size: (value) => finite(value, 'camera.size', 0.01, 1),
@@ -329,7 +330,14 @@ function applyOne(project, operation) {
     }
     case 'audio': return applyAudio(project, operation);
     case 'canvas': return applySimplePatch(project, operation, project.canvas, CANVAS_FIELDS, 'canvas');
-    case 'camera': return applySimplePatch(project, operation, project.camera, CAMERA_FIELDS, 'camera');
+    case 'camera': {
+      if (!own(operation, 'segmentId')) return applySimplePatch(project, operation, project.camera, CAMERA_FIELDS, 'camera');
+      keysOnly(operation, ['type', 'segmentId', 'patch'], 'camera 操作');
+      const segment = findSegment(project, operation.segmentId);
+      const result = applySimplePatch(project, { type: 'camera', patch: operation.patch },
+        segment.camera || (segment.camera = {}), { layout: CAMERA_FIELDS.layout, shape: CAMERA_FIELDS.shape }, 'camera');
+      return { ...result, segmentId: segment.id };
+    }
     case 'zoom': return applyZoom(project, operation);
     case 'effect': return applyEffect(project, operation);
     default: fail('invalid_params', `不支持编辑操作 ${operation.type}`);

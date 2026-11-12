@@ -579,4 +579,4 @@ class AgentBridge {
 
 function attachAgentBridge(options) { return new AgentBridge(options).attach(); }
 
-module.exports = { AgentBridge, attachAgentBridge, isTextEntryActive, stableStringify };
+module.exports = { AgentBridge, attachAgentBridge, isTextEntryActive, stableStringify, patchSubtitles };

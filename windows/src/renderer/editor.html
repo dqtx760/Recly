@@ -11,10 +11,6 @@
     <span class="muted" id="save-state"></span>
     <span class="muted" id="preview-status"></span>
     <span class="spacer"></span>
-    <div class="group">
-      <button class="btn ghost icon-only" id="undo" title="撤销（Ctrl+Z）"></button>
-      <button class="btn ghost icon-only" id="redo" title="重做（Ctrl+Shift+Z）"></button>
-    </div>
     <button class="btn ghost" id="scene-preset" title="场景预设">场景预设 ▾</button>
     <button class="btn" id="shortcuts" title="快捷键">快捷键</button>
     <button class="btn primary" id="export"></button>
@@ -27,8 +23,14 @@
 
   <main class="workspace">
     <section class="stage" id="stage">
-      <div class="ratio card" id="ratio"></div>
-      <button class="btn ghost quality-control" id="quality" title="切换预览质量">流畅预览</button>
+      <div class="stage-controls">
+        <div class="ratio card" id="ratio"></div>
+        <div class="group">
+          <button class="btn ghost icon-only" id="undo" title="撤销（Ctrl+Z）"></button>
+          <button class="btn ghost icon-only" id="redo" title="重做（Ctrl+Shift+Z）"></button>
+        </div>
+        <button class="btn ghost quality-control" id="quality" title="切换预览质量">流畅预览</button>
+      </div>
       <div class="canvas-wrap" id="canvas-wrap"><canvas id="preview" tabindex="0" aria-label="画面预览"></canvas></div>
       <div class="preview-toolbar" id="preview-toolbar">
         <button class="btn ghost icon-only preview-add-button" id="preview-add-button" type="button" title="添加到画面" aria-label="添加到画面" aria-haspopup="menu" aria-expanded="false">+</button>
