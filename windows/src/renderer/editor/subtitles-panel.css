@@ -1,4 +1,20 @@
 .subtitles-panel { padding-bottom: 12px; }
+.subtitles-recognition { padding-top: 12px; }
+.subtitle-recognition-settings summary, .subtitles-search > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 7px 0; }
+.subtitle-recognition-settings[open] { flex-basis: 100%; }
+.subtitle-recognition-settings[open] .subtitles-note { margin-top: 8px; }
+.subtitle-cue-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 26px; align-items: start; gap: 6px; }
+.subtitle-cue-index { padding-top: 9px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.subtitles-panel .subtitle-cue { padding: 8px 2px; margin: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+.subtitles-panel .subtitle-cue.selected { background: var(--accent-soft); border-radius: 8px; }
+.subtitle-cue-row .btn { width: 26px; min-width: 0; height: 28px; padding: 0; justify-content: center; font-size: 18px; }
+.subtitles-panel .subtitle-cue textarea { background: transparent; min-height: 42px; padding: 7px 4px; resize: none; }
+.subtitles-panel .subtitle-cue textarea:focus { outline: 1px solid var(--line); background: var(--panel); }
+.subtitle-export { justify-content: flex-end; margin-top: 12px; }
+.subtitle-animation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.subtitle-animation-card { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 18px 8px 10px; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
+.subtitle-animation-card span { font-size: 24px; font-weight: 700; }
+.subtitle-animation-card.active { border-color: var(--accent); background: var(--accent-soft); }
 .subtitles-panel [hidden] { display: none; }
 .subtitles-tabs { margin-top: 8px; }
 .subtitles-search .subtitles-field { grid-template-columns: 44px minmax(0, 1fr); }

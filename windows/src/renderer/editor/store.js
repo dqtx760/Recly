@@ -84,6 +84,7 @@ class Store {
   clipPool(type) {
     if (type === 'zoom') return this.project.zoomAnimations || [];
     if (type === 'segment') return this.project.timeline.segments || [];
+    if (type === 'subtitle') return this.project.subtitles?.cues || [];
     const pools = {
       screen: this.project.timeline.screenMotionClips,
       camera: this.project.timeline.cameraMotionClips,

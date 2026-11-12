@@ -41,6 +41,7 @@ class Inspector {
       if (reason === 'project' && store.gesture) this.refreshValues();
       else if (reason === 'project' || reason === 'selection' || reason === 'history') {
         if (reason === 'selection') {
+          if (store.selection?.type === 'subtitle') this.tab = 'subtitles';
           if (store.selection && ['sticker', 'mosaic'].includes(store.selection.type)) this.tab = 'overlays';
           else if (store.selectedScreenMotion) this.motionMode = 'screen3D';
           else if (store.selectedZoom) this.motionMode = 'zoom';

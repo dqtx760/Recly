@@ -7,6 +7,7 @@ const { element, icon, formatTime, fileUrl } = require('../common');
 const { clamp } = require('../../core/model');
 const zoomCore = require('../../core/zoom');
 const timeline = require('../../core/timeline');
+const { mapCuesToOutput } = require('../../core/subtitles');
 const waveform = require('./waveform');
 
 const PAD = 14;
@@ -32,6 +33,8 @@ class TimelineView {
     this.waveformSamples = new Map();
     this.segmentDrag = null;
     this.onAddEffect = null;
+    this.onSelectSubtitle = null;
+    this.subtitlePieces = [];
     const thumbnails = store.project.media.thumbnails;
     this.sprite = thumbnails ? { ...thumbnails, url: fileUrl(path.join(store.directory, thumbnails.file)) } : null;
 
@@ -48,7 +51,8 @@ class TimelineView {
     }, { passive: false });
 
     nodes.ruler.addEventListener('pointerdown', (event) => this.scrub(event));
-    for (const lane of [nodes.screen, nodes.zoom]) {
+    for (const lane of [nodes.subtitles, nodes.screen, nodes.zoom]) {
+      if (!lane) continue;
       lane.addEventListener('pointerdown', (event) => {
         if (event.target !== lane) return;
         store.select(null);
@@ -289,6 +293,7 @@ class TimelineView {
     lanes.style.width = `${Math.max(duration * this.pps + PAD * 2, scroller.clientWidth)}px`;
     slider.value = this.zoomLevel;
     this.renderRuler(duration);
+    this.renderSubtitleClips();
     this.renderSegments();
     this.renderZoomClips();
     this.renderEffectClips();
@@ -314,6 +319,69 @@ class TimelineView {
       }));
     }
     this.nodes.ruler.replaceChildren(...nodes);
+  }
+
+  renderSubtitleClips() {
+    const lane = this.nodes.subtitles;
+    if (!lane) return;
+    const label = this.nodes.subtitleLabel;
+    const enabled = this.store.project.subtitles?.enabled !== false;
+    lane.classList.toggle('muted', !enabled);
+    label?.classList.toggle('muted', !enabled);
+
+    const pieces = mapCuesToOutput(this.store.project).map((cue, pieceIndex) => ({ cue, pieceIndex }))
+      .sort((a, b) => a.cue.start - b.cue.start || a.cue.end - b.cue.end || a.cue.id.localeCompare(b.cue.id));
+    const rowEnds = [];
+    for (const item of pieces) {
+      const { cue } = item;
+      const layoutEnd = Math.max(cue.end, cue.start + 12 / Math.max(this.pps, 1));
+      let row = rowEnds.findIndex((end) => end <= cue.start + 1e-6);
+      if (row < 0) row = rowEnds.length;
+      rowEnds[row] = layoutEnd;
+      item.row = row;
+    }
+    const laneHeight = Math.max(32, 8 + rowEnds.length * 24);
+    lane.style.height = `${laneHeight}px`;
+    if (label) label.style.height = `${laneHeight}px`;
+
+    const selectedId = this.store.selection?.type === 'subtitle' ? this.store.selection.id : null;
+    const nodes = pieces.map((item) => {
+      const { cue, pieceIndex, row } = item;
+      const left = this.x(cue.start);
+      const width = Math.max((cue.end - cue.start) * this.pps - 2, 10);
+      const node = element('div', {
+        class: `subtitle-clip${selectedId === cue.id ? ' selected' : ''}`,
+        style: `left:${left}px;top:${4 + row * 24}px;width:${width}px;height:20px`,
+        'data-cue-id': cue.id,
+        'data-piece-index': pieceIndex,
+        'data-output-start': cue.start,
+        'data-output-end': cue.end,
+        title: `${cue.text} · ${formatTime(cue.start)}–${formatTime(cue.end)}`,
+        role: 'button',
+        tabindex: 0,
+        onpointerdown: (event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          this.store.select({ type: 'subtitle', id: cue.id });
+          this.preview.pause();
+          this.preview.seek(cue.start);
+          if (typeof this.onSelectSubtitle === 'function') this.onSelectSubtitle(cue);
+        },
+        onkeydown: (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          this.store.select({ type: 'subtitle', id: cue.id });
+          this.preview.pause();
+          this.preview.seek(cue.start);
+          if (typeof this.onSelectSubtitle === 'function') this.onSelectSubtitle(cue);
+        },
+      }, cue.text);
+      item.node = node;
+      return node;
+    });
+    this.subtitlePieces = pieces;
+    lane.replaceChildren(...nodes);
   }
 
   filmstrip(segment, width, height) {
@@ -546,6 +614,10 @@ class TimelineView {
     const { scroller, playhead } = this.nodes;
     const x = this.x(this.preview.time);
     playhead.style.transform = `translateX(${x}px)`;
+    for (const item of this.subtitlePieces || []) {
+      const active = this.preview.time >= item.cue.start && this.preview.time < item.cue.end;
+      item.node?.classList.toggle('playing', active);
+    }
     if (this.preview.playing && (x < scroller.scrollLeft + 20 || x > scroller.scrollLeft + scroller.clientWidth - 30)) {
       scroller.scrollLeft = x - 60;
     }

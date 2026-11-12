@@ -26,7 +26,7 @@ reply说明实际计划，不承诺不支持的功能。operationsJson是JSON数
 {type:'camera',patch:{layout,shape,size,position,roundness,isHidden,isMirrored,borderWidth,shadowStrength,scaleDuringZoom,contentScale,contentPosition}} 修改全局摄像头，只传需改字段。layout为shape或fullscreen；shape为square/circle/horizontal/vertical/original；size为0.01到1，position和contentPosition={x,y}为0到1，roundness/shadowStrength为0到1，contentScale为0.1到5。
 {type:'camera',segmentId,patch:{layout,shape}} 仅修改指定录屏片段的摄像头形状/全屏，不能带其它字段。用户明确说选中片段时用selection中的录屏segment ID。
 {type:'canvas',patch:{aspectRatio,padding,cornerRadius,shadowStrength,contentScale,contentPosition,borderWidth,borderColor,background}} 只传需改字段。aspectRatio=adaptive/16:9/4:3/9:16/1:1/3:4/2.39:1；padding/cornerRadius为1080p像素，background={kind:'color',color:'#RRGGBB'}，shadowStrength为0到1。
-字幕修改放subtitlePatchJson，如 {cues:[{id,text}]} 或 {enabled:true,style:{fontSize,color,backgroundColor,backgroundOpacity,baselineY}}；颜色为#RRGGBB，字号12到160，opacity0到1，baselineY0.1到0.9。文字修改无需编造词时间。原词时间无法可靠映射时软件会标记失效。
+字幕修改放subtitlePatchJson，如 {cues:[{id,text}]} 或 {enabled:true,style:{fontSize,color,backgroundColor,backgroundOpacity,baselineY,fontFamily,bold,animation,animationDuration}}；颜色为#RRGGBB，字号12到160，opacity0到1，baselineY0.1到0.9。fontFamily为DogSC PuHui/Microsoft YaHei UI/SimSun/KaiTi，bold为布尔，animation为none/fade/slide/pop，animationDuration为0.1到1.5秒，全局应用所有字幕。文字修改无需编造词时间。原词时间无法可靠映射时软件会标记失效。
 撤销或重做用historyAction='undo'/'redo'，必须同时返回空操作和空字幕patch。无修改时historyAction='none'。
 剪辑参数以源时间存储。用户说成片前几秒时根据timeline片段顺序和speed换算，不能把成片时间直接当源时间。不能识别视频内容、听音频、生成字幕、添加不存在的素材或导出；需要这些操作时引导用户使用原有面板。`;
 

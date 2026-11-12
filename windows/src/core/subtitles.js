@@ -8,6 +8,10 @@ const DEFAULT_STYLE = Object.freeze({
   backgroundColor: '#000000',
   backgroundOpacity: 1,
   baselineY: 0.86,
+  fontFamily: 'DogSC PuHui',
+  bold: true,
+  animation: 'none',
+  animationDuration: 0.25,
 });
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
@@ -32,6 +36,10 @@ function normalizeSubtitles(value = {}) {
     backgroundColor: isHexColor(rawStyle.backgroundColor) ? rawStyle.backgroundColor.toUpperCase() : DEFAULT_STYLE.backgroundColor,
     backgroundOpacity: isFiniteNumber(rawStyle.backgroundOpacity) ? clamp(Number(rawStyle.backgroundOpacity), 0, 1) : DEFAULT_STYLE.backgroundOpacity,
     baselineY: isFiniteNumber(rawStyle.baselineY) ? clamp(Number(rawStyle.baselineY), 0.1, 0.9) : DEFAULT_STYLE.baselineY,
+    fontFamily: ['DogSC PuHui', 'Microsoft YaHei UI', 'SimSun', 'KaiTi'].includes(rawStyle.fontFamily) ? rawStyle.fontFamily : DEFAULT_STYLE.fontFamily,
+    bold: rawStyle.bold !== false,
+    animation: ['none', 'fade', 'slide', 'pop'].includes(rawStyle.animation) ? rawStyle.animation : 'none',
+    animationDuration: isFiniteNumber(rawStyle.animationDuration) ? clamp(Number(rawStyle.animationDuration), 0.1, 1.5) : 0.25,
   };
   const cues = (Array.isArray(input.cues) ? input.cues : []).flatMap((rawCue) => {
     if (!rawCue || typeof rawCue !== 'object') return [];

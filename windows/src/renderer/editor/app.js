@@ -41,7 +41,7 @@ async function main() {
   const store = new Store(directory, project);
   const preview = new Preview(store, $('preview'), $('canvas-wrap'));
   const timelineView = new TimelineView(store, preview, {
-    scroller: $('scroller'), lanes: $('lanes'), ruler: $('ruler'), screen: $('lane-screen'), zoom: $('lane-zoom'), playhead: $('playhead'), slider: $('timeline-zoom'),
+    scroller: $('scroller'), lanes: $('lanes'), ruler: $('ruler'), subtitles: $('lane-subtitles'), subtitleLabel: $('label-subtitles'), screen: $('lane-screen'), zoom: $('lane-zoom'), playhead: $('playhead'), slider: $('timeline-zoom'),
     effects: { screen: $('lane-screen-motion'), camera: $('lane-camera-motion'), mosaic: $('lane-mosaic'), sticker: $('lane-sticker') },
   });
   $('scroller').addEventListener('scroll', () => { $('track-labels').scrollTop = $('scroller').scrollTop; }, { passive: true });
@@ -89,6 +89,10 @@ async function main() {
     inspector.show(id);
     railButtons.forEach((button, index) => button.classList.toggle('active', TABS[index].id === inspector.tab));
   }
+  timelineView.onSelectSubtitle = () => {
+    if (inspector.subtitlesState) inspector.subtitlesState.tab = 'subtitles';
+    showTab('subtitles');
+  };
   inspector.timelineView = timelineView;
   const createEffect = async (kind, outputTime) => {
     const hit = timeline.locate(store.project.timeline.segments, outputTime);
@@ -265,6 +269,7 @@ async function main() {
   $('next').innerHTML = icon('next');
   $('zoom-out').innerHTML = icon('minus');
   $('zoom-in').innerHTML = icon('plus');
+  $('label-subtitles').innerHTML = `${icon('memo')}字幕`;
   $('label-screen').innerHTML = `${icon('display')}屏幕录制`;
   $('label-zoom').innerHTML = `${icon('motion')}缩放`;
   $('label-screen-motion').innerHTML = `${icon('motion')}屏幕 3D`;
@@ -276,6 +281,7 @@ async function main() {
   $('display-mode').textContent = timelineView.displayMode === 'waveform' ? '画面' : '波形';
 
   const split = () => {
+    if (store.selection?.type === 'subtitle') return toast('字幕块暂不支持在时间线上分割');
     if (store.selection && ['zoom', 'screen', 'camera', 'mosaic', 'sticker'].includes(store.selection.type)) {
       return splitSelectedEffect();
     }
@@ -285,7 +291,13 @@ async function main() {
     return null;
   };
   const remove = () => {
-    if (store.selectedZoom) {
+    if (store.selection?.type === 'subtitle') {
+      const { id } = store.selection;
+      store.mutate((draft) => {
+        if (draft.subtitles) draft.subtitles.cues = (draft.subtitles.cues || []).filter((cue) => cue.id !== id);
+      });
+      store.select(null);
+    } else if (store.selectedZoom) {
       const { id } = store.selectedZoom;
       store.mutate((draft) => { draft.zoomAnimations = draft.zoomAnimations.filter((clip) => clip.id !== id); });
       store.select(null);
@@ -310,6 +322,7 @@ async function main() {
     return null;
   };
   const chooseSpeed = async () => {
+    if (store.selection?.type === 'subtitle') return toast('请先选择一个录屏片段');
     const segment = store.selectedSegment || timeline.locate(store.project.timeline.segments, preview.time).segment;
     const chosen = await ipcRenderer.invoke('recorder:menu', timeline.SPEEDS.map((speed) => ({ id: String(speed), label: `${speed}×`, checked: Math.abs(segment.speed - speed) < 1e-6 })));
     if (!chosen) return;

@@ -34,7 +34,7 @@ function panelState(inspector) {
       candidate: null,
       candidateTrack: null,
       confirmReplace: false,
-      tab: 'recognition',
+      tab: 'subtitles',
       query: '',
       replacement: '',
     };
@@ -147,12 +147,8 @@ function renderSubtitlesPanel(inspector) {
     'aria-checked': subtitles.enabled ? 'true' : 'false',
     onclick: () => write((value) => { value.enabled = !value.enabled; }),
   }, subtitles.enabled ? '已启用' : '已关闭');
-  panel.append(element('div', { class: 'subtitles-heading' },
-    element('div', {}, element('h3', {}, '字幕轨'), note('字幕时间按录屏源时间保存，剪辑后会映射到成片。')),
-    enabled));
-
   panel.append(element('nav', { class: 'subtitles-tabs frame-tabs', 'aria-label': '字幕分组' },
-    [['recognition', '识别'], ['style', '样式'], ['content', '内容']].map(([id, label]) => element('button', {
+    [['subtitles', '字幕'], ['text', '文本'], ['animation', '动画']].map(([id, label]) => element('button', {
       type: 'button', class: state.tab === id ? 'active' : '', 'aria-pressed': String(state.tab === id),
       onclick: () => { state.tab = id; inspector.root.scrollTop = 0; inspector.render(); },
     }, label))));
@@ -189,12 +185,26 @@ function renderSubtitlesPanel(inspector) {
     const position = Number(baseline.value);
     if (Number.isFinite(position)) write((value) => { value.style.baselineY = Math.min(Math.max(position, 0.1), 0.9); });
   });
-  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'style' }, element('h4', {}, '样式'),
-    field('字号（1080p）', fontSize),
+  const fontFamily = element('select', { 'aria-label': '字幕字体' },
+    [['DogSC PuHui', '普惠体'], ['Microsoft YaHei UI', '微软雅黑'], ['SimSun', '宋体'], ['KaiTi', '楷体']].map(([id, label]) => element('option', { value: id }, label)));
+  fontFamily.value = style.fontFamily;
+  fontFamily.addEventListener('change', () => write(value => { value.style.fontFamily = fontFamily.value; }));
+  const bold = button(style.bold ? '已加粗' : '常规', () => write(value => { value.style.bold = !value.style.bold; }));
+  const duration = element('input', { type: 'range', min: 0.1, max: 1.5, step: 0.05, value: style.animationDuration, 'aria-label': '字幕动画时长' });
+  duration.addEventListener('change', () => write(value => { value.style.animationDuration = Number(duration.value); }));
+  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'animation' },
+    element('div', { class: 'subtitle-animation-grid' }, [['none', '无动画'], ['fade', '淡入淡出'], ['slide', '向上滑入'], ['pop', '轻微放大']].map(([id, label]) => element('button', {
+      type: 'button', class: `subtitle-animation-card${style.animation === id ? ' active' : ''}`, 'data-subtitle-animation': id,
+      'aria-pressed': String(style.animation === id), onclick: () => write(value => { value.style.animation = id; }),
+    }, element('span', {}, '字幕'), label))),
+    style.animation !== 'none' ? field('时长', duration) : null, note('应用于全部字幕')));
+  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'text' },
+    field('显示字幕', enabled),
+    field('字体', fontFamily), field('加粗', bold), field('字号', fontSize),
     field('文字颜色', textColor),
     field('底色', backgroundColor),
     field('底色不透明度', opacity),
-    field('垂直基线（画布比例）', baseline)));
+    field('垂直位置', baseline), note('应用于全部字幕')));
 
   const media = project.media || {};
   if (state.track === 'microphone' && !media.microphone && media.systemAudio) state.track = 'systemAudio';
@@ -311,19 +321,18 @@ function renderSubtitlesPanel(inspector) {
   };
 
   const availableTrack = state.track === 'microphone' ? media.microphone : media.systemAudio;
-  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'recognition' }, element('h4', {}, '语音识别'),
-    engineLine,
-    field('声音来源', trackSelect),
-    field('识别范围', scopeSelect),
+  panel.append(element('section', { class: 'subtitles-section subtitles-recognition', hidden: state.tab !== 'subtitles' },
     element('div', { class: 'subtitles-actions' },
       element('button', {
         type: 'button', class: 'btn primary', disabled: Boolean(state.starting || state.jobId || !environment?.ready || !availableTrack),
         onclick: startRecognition,
-      }, state.starting ? '正在启动…' : state.jobId ? '正在识别…' : '一键识别字幕'),
-      state.jobId ? button('取消', cancelRecognition, 'ghost') : null),
-    progress,
-    !availableTrack ? note(state.track === 'microphone' ? '本工程没有麦克风音轨，请切换到系统声音或手动添加字幕。' : '本工程没有系统声音音轨，请切换到麦克风或手动添加字幕。', 'error') : null,
-    !environment?.ready ? note('字幕仍可手动编辑；准备 whisper.cpp 程序和中文模型后可启用自动识别。') : null));
+      }, state.starting ? '正在启动…' : state.jobId ? '正在识别…' : '识别字幕'),
+      state.jobId ? button('取消', cancelRecognition, 'ghost') : null,
+      element('details', { class: 'subtitle-recognition-settings' }, element('summary', {}, '识别设置'),
+        engineLine, field('声音来源', trackSelect), field('识别范围', scopeSelect))),
+    state.status ? progress : null,
+    state.environmentError || (!state.environmentLoading && !environment?.ready) ? note('识别未就绪，请打开识别设置检查。', 'error') : null,
+    !availableTrack ? note('本工程没有所选音轨，可在识别设置中切换。', 'error') : null));
 
   const addCue = () => {
     const hit = timeline.locate(store.project.timeline?.segments || [], inspector.preview.time || 0);
@@ -381,7 +390,7 @@ function renderSubtitlesPanel(inspector) {
   if (state.candidate) {
     const previewItems = state.candidate.slice(0, 4).map((cue) => element('li', {},
       element('time', {}, `${cue.start.toFixed(2)}–${cue.end.toFixed(2)} 秒`), cue.text));
-    panel.append(element('section', { class: 'subtitles-candidate', hidden: state.tab !== 'recognition' },
+    panel.append(element('section', { class: 'subtitles-candidate', hidden: state.tab !== 'subtitles' },
       element('h4', {}, `识别候选 · ${state.candidate.length} 条`),
       note('候选还没有写入工程。追加会保留已校对内容；替换需要再次确认。'),
       element('ul', {}, previewItems),
@@ -421,13 +430,13 @@ function renderSubtitlesPanel(inspector) {
   };
   search.addEventListener('input', () => { state.query = search.value; refreshSearch(); });
   replacement.addEventListener('input', () => { state.replacement = replacement.value; refreshSearch(); });
-  panel.append(element('section', { class: 'subtitles-section subtitles-search', hidden: state.tab !== 'content' },
-    field('查找', search), field('替换为', replacement),
+  panel.append(element('details', { class: 'subtitles-section subtitles-search', hidden: state.tab !== 'subtitles' },
+    element('summary', {}, '查找替换'), field('查找', search), field('替换为', replacement),
     element('div', { class: 'subtitles-actions' }, replaceAll), searchStatus));
-  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'content' },
+  panel.append(element('section', { class: 'subtitles-section', hidden: state.tab !== 'subtitles' },
     element('div', { class: 'subtitles-list-heading' }, element('h4', {}, `字幕条目 · ${subtitles.cues.length}`),
-      element('div', { class: 'subtitles-actions' }, button('添加字幕', addCue), button('导出 SRT', saveSrt, 'ghost'))),
-    warningCount ? note(`${warningCount} 条字幕跨越剪切边界，但没有可靠词对齐，预览和导出中会隐藏。`, 'warning') : null,
+      element('div', { class: 'subtitles-actions' }, button('添加', addCue))),
+    warningCount ? note(`${warningCount} 条字幕跨过剪切点，需检查时间后才会显示。`, 'warning') : null,
     subtitles.cues.length ? subtitles.cues.map((cue, index) => {
       const text = element('textarea', { rows: 2, 'aria-label': `第 ${index + 1} 条字幕文字`, spellcheck: 'false' });
       text.value = cue.text;
@@ -459,23 +468,22 @@ function renderSubtitlesPanel(inspector) {
           target.alignment = 'stale';
         });
       });
-      const remove = button('删除', () => write((value) => { value.cues = value.cues.filter((item) => item.id !== cue.id); }), 'danger');
+      const remove = button('×', () => { write((value) => { value.cues = value.cues.filter((item) => item.id !== cue.id); }); if (store.selection?.type === 'subtitle' && store.selection.id === cue.id) store.select(null); }, 'danger');
+      remove.title = '删除字幕';
       const occurrence = mapped.find((item) => item.id === cue.id);
+      const selected = store.selection?.type === 'subtitle' && store.selection.id === cue.id;
       const locate = element('button', {
-        type: 'button', class: 'btn ghost', disabled: !occurrence,
-        title: occurrence ? `定位成片 ${occurrence.start.toFixed(2)} 秒（首次出现）` : '此字幕未出现在当前成片中',
-        onclick: () => inspector.preview.seek(occurrence.start),
-      }, '定位画面');
-      const node = element('article', { class: 'subtitle-cue', 'data-cue-id': cue.id },
-        element('div', { class: 'subtitle-cue-heading' }, element('b', {}, `#${index + 1}`),
-          element('span', { class: cue.alignment === 'stale' ? 'alignment stale' : 'alignment' }, cue.alignment === 'stale' ? '需重新对齐' : '词时间有效'), remove),
-        element('div', { class: 'subtitles-actions' }, locate), text,
-        element('div', { class: 'subtitle-times' }, field('开始（源秒）', start), field('结束（源秒）', end)),
-        cue.alignment === 'stale' ? note('文字或时间已修改，剪切边界无法按词拆分；完整保留时仍会显示。') : null);
+        type: 'button', class: 'subtitle-cue-index', title: occurrence ? '定位并编辑字幕' : '此字幕未出现在成片中',
+        onclick: () => { store.select({ type: 'subtitle', id: cue.id }); if (occurrence) inspector.preview.seek(occurrence.start); },
+      }, String(index + 1));
+      const node = element('article', { class: `subtitle-cue${selected ? ' selected' : ''}`, 'data-cue-id': cue.id },
+        element('div', { class: 'subtitle-cue-row' }, locate, text, remove),
+        selected ? element('div', { class: 'subtitle-times' }, field('原片起点（秒）', start), field('原片终点（秒）', end)) : null);
       cueNodes.push({ node, cue });
       return node;
     }) : note('还没有字幕。可手动添加，也可从录制音轨识别。')));
 
+  panel.append(element('div', { class: 'subtitles-actions subtitle-export', hidden: state.tab !== 'subtitles' }, button('导出 SRT', saveSrt, 'ghost')));
   refreshSearch();
   return [panel];
 }

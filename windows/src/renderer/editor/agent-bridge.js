@@ -45,10 +45,18 @@ function exactKeys(value, allowed, name) {
 }
 
 function checkStyle(style) {
-  exactKeys(style, ['fontSize', 'color', 'backgroundColor', 'backgroundOpacity', 'baselineY'], 'style');
+  exactKeys(style, ['fontSize', 'color', 'backgroundColor', 'backgroundOpacity', 'baselineY', 'fontFamily', 'bold', 'animation', 'animationDuration'], 'style');
   const result = {};
   for (const [key, value] of Object.entries(style)) {
-    if (key === 'fontSize') result[key] = finite(value, `style.${key}`, 12, 160);
+    if (key === 'bold') {
+      if (typeof value !== 'boolean') error('invalid_params', 'style.bold 必须是布尔值');
+      result[key] = value;
+    } else if (key === 'fontFamily' || key === 'animation') {
+      const allowed = key === 'fontFamily' ? ['DogSC PuHui', 'Microsoft YaHei UI', 'SimSun', 'KaiTi'] : ['none', 'fade', 'slide', 'pop'];
+      if (!allowed.includes(value)) error('invalid_params', `style.${key} 无效`);
+      result[key] = value;
+    } else if (key === 'animationDuration') result[key] = finite(value, `style.${key}`, 0.1, 1.5);
+    else if (key === 'fontSize') result[key] = finite(value, `style.${key}`, 12, 160);
     else if (key === 'backgroundOpacity') result[key] = finite(value, `style.${key}`, 0, 1);
     else if (key === 'baselineY') result[key] = finite(value, `style.${key}`, 0.1, 0.9);
     else {

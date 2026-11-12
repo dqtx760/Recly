@@ -31,7 +31,7 @@ assert.deepEqual(legacy.subtitles, {
   enabled: true,
   sourceTrack: 'microphone',
   language: 'zh',
-  style: { fontSize: 48, color: '#FFFFFF', backgroundColor: '#000000', backgroundOpacity: 1, baselineY: 0.86 },
+  style: { fontSize: 48, color: '#FFFFFF', backgroundColor: '#000000', backgroundOpacity: 1, baselineY: 0.86, fontFamily: 'DogSC PuHui', bold: true, animation: 'none', animationDuration: 0.25 },
   cues: [],
 });
 
@@ -164,4 +164,29 @@ project.timeline.segments = [{ id: 'cut', sourceStart: 1.5, sourceEnd: 8, speed:
 assert.equal(mapCuesToOutput(project).length, 0, '当前文字与词时间数量不符时，跨切片内容不显示');
 assert.equal(mapCuesToOutput(project).warnings.length, 1);
 
+const animated = makeProject({ media: { screen: { duration: 5, width: 1920, height: 1080 } }, capture: {} });
+animated.subtitles.cues = [{ id: 'animated', start: 1, end: 3, text: '动画测试', alignment: 'valid', words: [] }];
+animated.subtitles.style.animation = 'fade';
+animated.subtitles.style.animationDuration = 0.5;
+const alpha = [];
+drawContext.fillText = () => alpha.push(drawContext.globalAlpha);
+drawContext.globalAlpha = 1;
+drawSubtitleText(drawContext, animated, { width: 1920, height: 1080, styleScale: 1, outputTime: 1.25 }, 1.25);
+assert.equal(alpha.at(-1), 0.5, '入场按成片秒数渐显');
+drawContext.globalAlpha = 1;
+drawSubtitleText(drawContext, animated, { width: 1920, height: 1080, styleScale: 1, outputTime: 2.75 }, 2.75);
+assert.equal(alpha.at(-1), 0.5, '离场按成片秒数渐隐');
+animated.timeline.segments = [{ id: 'fast', sourceStart: 1, sourceEnd: 3, speed: 2 }];
+animated.revision = 1;
+drawContext.globalAlpha = 1;
+drawSubtitleText(drawContext, animated, { width: 1920, height: 1080, styleScale: 1, outputTime: 0.25 }, 1.5);
+assert.equal(alpha.at(-1), 0.5, '变速后动画依然按成片时间计算');
+animated.subtitles.style.animation = 'pop';
+const scales = [];
+drawContext.scale = (x, y) => scales.push([x, y]);
+drawContext.globalAlpha = 1;
+drawSubtitleText(drawContext, animated, { width: 1920, height: 1080, styleScale: 1, outputTime: 0.25 }, 1.5);
+assert.deepEqual(scales.at(-1), [0.94, 0.94]);
+assert.equal(normalizeSubtitles({ style: { animation: 'invalid', animationDuration: 99, fontFamily: 'unavailable' } }).style.animation, 'none');
+assert.equal(normalizeSubtitles({ style: { animationDuration: 99 } }).style.animationDuration, 1.5);
 console.log('字幕轨测试通过');

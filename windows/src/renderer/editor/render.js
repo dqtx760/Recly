@@ -139,6 +139,13 @@ function rgba(color, alpha) {
 function drawSubtitleText(ctx, project, scene, sourceTime) {
   const cues = activeCues(project, sourceTime, scene.outputTime);
   if (!cues.length || project.subtitles?.enabled === false) return;
+  if (cues.length > 1 && project.subtitles.style.animation && project.subtitles.style.animation !== 'none') {
+    let offset = 0;
+    for (const cue of [...cues].reverse()) offset += drawSubtitleBlock(ctx, project, scene, sourceTime, [cue], offset);
+  } else drawSubtitleBlock(ctx, project, scene, sourceTime, cues, 0);
+}
+
+function drawSubtitleBlock(ctx, project, scene, sourceTime, cues, offset) {
   const style = project.subtitles.style;
   const { width, height } = scene;
   const scale = scene.styleScale || 1;
@@ -147,13 +154,13 @@ function drawSubtitleText(ctx, project, scene, sourceTime) {
   const paddingY = fontSize * 0.18;
   const safeTop = height * 0.08;
   const safeBottom = height * 0.92 - fontSize * 0.32 - paddingY;
-  const bottom = clamp(style.baselineY * height, safeTop + fontSize * 0.92 + paddingY, safeBottom);
+  const bottom = clamp(style.baselineY * height - offset, safeTop + fontSize * 0.92 + paddingY, safeBottom);
   const maxLines = Math.max(1, Math.floor((bottom - safeTop - fontSize * 0.92 - paddingY) / lineHeight) + 1);
   const text = cues.map((cue) => cue.text.trim()).filter(Boolean).join('\n');
-  if (!text) return;
+  if (!text) return 0;
 
   ctx.save();
-  ctx.font = `600 ${fontSize}px "DogSC PuHui", "Microsoft YaHei", sans-serif`;
+  ctx.font = `${style.bold === false ? 400 : 600} ${fontSize}px "${style.fontFamily || 'DogSC PuHui'}", "Microsoft YaHei", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   let lines = wrapSubtitleLines(ctx, text, width * 0.88);
@@ -165,7 +172,7 @@ function drawSubtitleText(ctx, project, scene, sourceTime) {
   }
   if (!lines.length) {
     ctx.restore();
-    return;
+    return 0;
   }
 
   const widths = lines.map((line) => ctx.measureText(line).width);
@@ -175,6 +182,22 @@ function drawSubtitleText(ctx, project, scene, sourceTime) {
   const firstBaseline = bottom - (lines.length - 1) * lineHeight;
   const boxY = firstBaseline - fontSize * 0.92 - paddingY;
   const box = { x: (width - boxWidth) / 2, y: boxY, width: boxWidth, height: boxHeight };
+  if (style.animation && style.animation !== 'none') {
+    const cue = cues[0];
+    const time = Number.isFinite(scene.outputTime) ? scene.outputTime : cue.start + (sourceTime - cue.sourceStart);
+    const duration = Math.min(style.animationDuration || 0.25, (cue.end - cue.start) / 2);
+    const entering = clamp((time - cue.start) / Math.max(duration, 0.001), 0, 1);
+    const leaving = clamp((cue.end - time) / Math.max(duration, 0.001), 0, 1);
+    const amount = Math.min(entering, leaving);
+    ctx.globalAlpha *= amount;
+    if (style.animation === 'slide') ctx.translate(0, (1 - amount) * fontSize * 0.8);
+    if (style.animation === 'pop') {
+      const zoom = 0.88 + amount * 0.12;
+      ctx.translate(width / 2, box.y + box.height / 2);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-width / 2, -box.y - box.height / 2);
+    }
+  }
   ctx.fillStyle = rgba(style.backgroundColor, style.backgroundOpacity);
   roundedRect(ctx, box, fontSize * 0.18);
   ctx.fill();
@@ -188,6 +211,7 @@ function drawSubtitleText(ctx, project, scene, sourceTime) {
     ctx.fillText(line, width / 2, y, width * 0.88);
   });
   ctx.restore();
+  return boxHeight + fontSize * 0.2;
 }
 
 function expandPolygon(points, distance) {
