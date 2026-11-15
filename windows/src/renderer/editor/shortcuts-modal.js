@@ -16,8 +16,6 @@ try {
 const DEFAULT_SHORTCUTS = Object.freeze({
   recordToggle: 'Control+Alt+R',
   recordPause: 'Control+Alt+P',
-  recordMarker: 'Control+Alt+M',
-  recordDiscard: 'Control+Alt+D',
   play: 'Space',
   split: 'S',
   delete: 'Delete',
@@ -33,8 +31,6 @@ const SHORTCUT_CATEGORIES = Object.freeze([
     items: [
       { action: 'recordToggle', label: '开始 / 停止录制', default: 'Control+Alt+R' },
       { action: 'recordPause', label: '暂停 / 继续录制', default: 'Control+Alt+P' },
-      { action: 'recordMarker', label: '标记', default: 'Control+Alt+M' },
-      { action: 'recordDiscard', label: '放弃', default: 'Control+Alt+D' },
     ],
   },
   {
@@ -42,7 +38,7 @@ const SHORTCUT_CATEGORIES = Object.freeze([
     title: '编辑器快捷键',
     items: [
       { action: 'play', label: '播放 / 暂停', default: 'Space' },
-      { action: 'split', label: '分割', default: 'S' },
+      { action: 'split', label: '在播放头处分割片段（含音频）', default: 'S' },
       { action: 'delete', label: '删除', default: 'Delete' },
       { action: 'addZoom', label: '缩放', default: 'Z' },
       { action: 'export', label: '导出', default: 'Control+E' },

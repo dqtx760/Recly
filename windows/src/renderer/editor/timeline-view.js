@@ -27,6 +27,12 @@ function wheelPixels(event, axis, scroller) {
   return delta;
 }
 
+function isStoreSelected(store, type, id) {
+  return typeof store.isSelected === 'function'
+    ? store.isSelected(type, id)
+    : store.selection?.type === type && store.selection.id === id;
+}
+
 class TimelineView {
   constructor(store, preview, nodes) {
     this.store = store;
@@ -54,12 +60,11 @@ class TimelineView {
     nodes.scroller.addEventListener('wheel', (event) => this.handleWheel(event), { passive: false });
 
     nodes.ruler.addEventListener('pointerdown', (event) => this.scrub(event));
-    for (const lane of [nodes.subtitles, nodes.screen, nodes.zoom]) {
+    for (const lane of [nodes.subtitles, nodes.screen, nodes.audio, nodes.zoom]) {
       if (!lane) continue;
       lane.addEventListener('pointerdown', (event) => {
         if (event.target !== lane) return;
-        store.select(null);
-        this.scrub(event);
+        this.beginMarquee(event);
       });
     }
     for (const kind of ['screen', 'camera', 'mosaic', 'sticker']) {
@@ -67,8 +72,7 @@ class TimelineView {
       if (!lane) continue;
       lane.addEventListener('pointerdown', (event) => {
         if (event.target !== lane) return;
-        store.select(null);
-        this.scrub(event);
+        this.beginMarquee(event);
       });
       lane.addEventListener('dblclick', (event) => {
         if (event.target === lane && typeof this.onAddEffect === 'function') {
@@ -78,6 +82,51 @@ class TimelineView {
     }
     nodes.zoom.addEventListener('dblclick', (event) => { if (event.target === nodes.zoom) this.addZoomAt(this.timeAt(event.clientX)); });
     this.render();
+  }
+
+
+  beginMarquee(event) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const lanesBounds = this.nodes.lanes.getBoundingClientRect();
+    const start = { x: event.clientX, y: event.clientY };
+    const box = element('div', { class: 'timeline-marquee', 'aria-hidden': 'true' });
+    this.nodes.lanes.append(box);
+    let moved = false;
+    const update = (moveEvent) => {
+      const left = Math.min(start.x, moveEvent.clientX);
+      const top = Math.min(start.y, moveEvent.clientY);
+      const right = Math.max(start.x, moveEvent.clientX);
+      const bottom = Math.max(start.y, moveEvent.clientY);
+      moved ||= Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) >= 4;
+      box.style.left = `${left - lanesBounds.left}px`;
+      box.style.top = `${top - lanesBounds.top}px`;
+      box.style.width = `${right - left}px`;
+      box.style.height = `${bottom - top}px`;
+      if (!moved) return;
+      const selected = [];
+      const seen = new Set();
+      for (const node of this.nodes.lanes.querySelectorAll('[data-selection-type][data-selection-id]')) {
+        const bounds = node.getBoundingClientRect();
+        if (bounds.right < left || bounds.left > right || bounds.bottom < top || bounds.top > bottom) continue;
+        const type = node.dataset.selectionType;
+        const id = node.dataset.selectionId;
+        const key = `${type}:${id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        selected.push({ type, id });
+      }
+      this.store.select(selected);
+    };
+    const finish = (upEvent) => {
+      window.removeEventListener('pointermove', update);
+      window.removeEventListener('pointerup', finish);
+      if (!moved) this.store.select(null);
+      box.remove();
+    };
+    window.addEventListener('pointermove', update);
+    window.addEventListener('pointerup', finish, { once: true });
   }
 
   get segments() { return this.store.project.timeline.segments; }
@@ -99,7 +148,7 @@ class TimelineView {
     // Trackpads send many small wheel events; scale those gently while keeping
     // a mouse-wheel notch close to the existing slider step.
     const step = 0.06 * Math.max(0.25, Math.min(Math.abs(delta) / 100, 1.5));
-    this.setZoom(clamp(this.zoomLevel - Math.sign(delta) * step, 0, 1), event.clientX);
+    this.setZoom(clamp(this.zoomLevel - Math.sign(delta) * step, -1, 1), event.clientX);
   }
 
   setDisplayMode(mode) {
@@ -276,8 +325,8 @@ class TimelineView {
   setZoom(level, anchorClientX) {
     const anchorTime = anchorClientX === undefined ? this.preview.time : this.timeAt(anchorClientX);
     const anchorOffset = this.x(anchorTime) - this.nodes.scroller.scrollLeft;
-    this.zoomLevel = level;
-    this.nodes.slider.value = level;
+    this.zoomLevel = clamp(level, -1, 1);
+    this.nodes.slider.value = this.zoomLevel;
     this.render();
     this.nodes.scroller.scrollLeft = this.x(anchorTime) - anchorOffset;
   }
@@ -309,13 +358,15 @@ class TimelineView {
     const { scroller, lanes, slider } = this.nodes;
     const duration = Math.max(this.duration, 0.1);
     const available = Math.max(scroller.clientWidth - PAD * 2, 100);
-    // 0 档正好铺满可视宽度，1 档放大到约 40 倍。
-    this.pps = (available / duration) * (1 + this.zoomLevel * this.zoomLevel * 39);
+    // 0 档正好铺满可视宽度；-1 档缩至一半，1 档放大到约 40 倍。
+    const scale = this.zoomLevel < 0 ? 1 + this.zoomLevel * 0.5 : 1 + this.zoomLevel * this.zoomLevel * 39;
+    this.pps = (available / duration) * scale;
     lanes.style.width = `${Math.max(duration * this.pps + PAD * 2, scroller.clientWidth)}px`;
     slider.value = this.zoomLevel;
     this.renderRuler(duration);
     this.renderSubtitleClips();
     this.renderSegments();
+    this.renderAudioClips();
     this.renderZoomClips();
     this.renderEffectClips();
     this.updatePlayhead();
@@ -371,9 +422,10 @@ class TimelineView {
       const left = this.x(cue.start);
       const width = Math.max((cue.end - cue.start) * this.pps - 2, 10);
       const node = element('div', {
-        class: `subtitle-clip${selectedId === cue.id ? ' selected' : ''}`,
+        class: `subtitle-clip${isStoreSelected(this.store, 'subtitle', cue.id) ? ' selected' : ''}`,
         style: `left:${left}px;top:${4 + row * 24}px;width:${width}px;height:20px`,
         'data-cue-id': cue.id,
+        'data-selection-type': 'subtitle', 'data-selection-id': cue.id,
         'data-piece-index': pieceIndex,
         'data-output-start': cue.start,
         'data-output-end': cue.end,
@@ -460,7 +512,7 @@ class TimelineView {
     const nodes = visualSegments.map((segment) => {
       const duration = timeline.segmentOutputDuration(segment);
       const width = Math.max(duration * this.pps - 2, 6);
-      const selected = this.store.selection && this.store.selection.type === 'segment' && this.store.selection.id === segment.id;
+      const selected = isStoreSelected(this.store, 'segment', segment.id);
       const trim = (edge) => (event) => {
         const original = segment[edge === 'start' ? 'sourceStart' : 'sourceEnd'];
         this.store.select({ type: 'segment', id: segment.id });
@@ -476,6 +528,7 @@ class TimelineView {
       const node = element('div', {
         class: `segment${selected ? ' selected' : ''}`, style: `left:${this.x(start)}px;width:${width}px`,
         'data-segment-id': segment.id,
+        'data-selection-type': 'segment', 'data-selection-id': segment.id,
         onpointerdown: (event) => this.beginSegmentPointer(event, segment),
       },
       this.displayMode === 'waveform' ? this.waveformStrip(segment, width, height) : this.filmstrip(segment, width, height),
@@ -485,6 +538,61 @@ class TimelineView {
       start += duration;
       return node;
     });
+    lane.replaceChildren(...nodes);
+  }
+
+  renderAudioClips() {
+    const lane = this.nodes.audio;
+    if (!lane) return;
+    const clips = this.store.project.timeline.audioClips || [];
+    const label = this.nodes.audioLabel;
+    const height = 40;
+    lane.style.height = `${height}px`;
+    if (label) label.style.height = `${height}px`;
+    const nodes = [...clips]
+      .sort((a, b) => a.startTime - b.startTime)
+      .map((clip) => {
+        const sourceStart = Math.max(0, Number(clip.sourceStart) || 0);
+        const sourceEnd = Math.max(sourceStart + 0.05, Number(clip.sourceEnd) || Number(clip.duration) || 0.05);
+        const duration = sourceEnd - sourceStart;
+        const selected = isStoreSelected(this.store, 'audio', clip.id);
+        const edit = (mode) => (event) => {
+          const original = { start: clip.startTime, sourceStart, sourceEnd };
+          this.store.select({ type: 'audio', id: clip.id });
+          this.preview.pause();
+          this.preview.seek(Math.max(0, clip.startTime));
+          this.drag(event, {
+            move: (dx) => this.store.mutate((project) => {
+              const target = project.timeline.audioClips.find((item) => item.id === clip.id);
+              if (!target) return;
+              const delta = dx / this.pps;
+              if (mode === 'move') {
+                target.startTime = clamp(original.start + delta, 0, this.duration);
+              } else if (mode === 'start') {
+                const nextSourceStart = clamp(original.sourceStart + delta, 0, original.sourceEnd - 0.05);
+                target.startTime = Math.max(0, original.start + nextSourceStart - original.sourceStart);
+                target.sourceStart = nextSourceStart;
+              } else {
+                const maxEnd = Number(target.sourceDuration) || original.sourceEnd;
+                target.sourceEnd = clamp(original.sourceEnd + delta, original.sourceStart + 0.05, maxEnd);
+              }
+            }, { history: false }),
+          });
+        };
+        const left = this.x(clip.startTime);
+        const width = Math.max(duration * this.pps - 2, 9);
+        return element('div', {
+          class: `audio-clip${clip.kind === 'voiceover' ? ' voiceover' : ''}${selected ? ' selected' : ''}`,
+          style: `left:${left}px;width:${width}px`,
+          title: `${clip.name || '音频'} · ${formatTime(clip.startTime)}–${formatTime(clip.startTime + duration)} · 拖动移动，拖两端裁切`,
+          'data-audio-id': clip.id,
+          'data-selection-type': 'audio', 'data-selection-id': clip.id,
+          onpointerdown: edit('move'),
+        },
+        element('span', { class: 'audio-tag' }, clip.name || (clip.kind === 'voiceover' ? '配音' : '音乐')),
+        element('div', { class: 'handle start', title: '裁切音频开头', onpointerdown: edit('start') }),
+        element('div', { class: 'handle end', title: '裁切音频结尾', onpointerdown: edit('end') }));
+      });
     lane.replaceChildren(...nodes);
   }
 
@@ -504,7 +612,7 @@ class TimelineView {
     const nodes = [];
     for (const piece of this.zoomPieces()) {
       const { clip, segment } = piece;
-      const selected = this.store.selection?.type === 'zoom' && this.store.selection.id === clip.id;
+      const selected = isStoreSelected(this.store, 'zoom', clip.id);
       const original = { start: clip.startTime, end: clip.endTime };
       const hasStartHandle = Math.abs(piece.sourceStart - original.start) < 1e-6;
       const hasEndHandle = Math.abs(piece.sourceEnd - original.end) < 1e-6;
@@ -538,6 +646,7 @@ class TimelineView {
       nodes.push(element('div', {
         class: `zoom-clip${selected ? ' selected' : ''}`, style: `left:${left}px;width:${width}px`,
         'data-zoom-id': clip.id,
+        'data-selection-type': 'zoom', 'data-selection-id': clip.id,
         title: '拖动移动，拖两端改长短', onpointerdown: edit('move'),
       },
       `缩放 ${clip.scale.toFixed(1)}× · ${clip.origin === 'automatic' ? '自动' : '手动'}`,
@@ -562,7 +671,7 @@ class TimelineView {
       const nodes = [];
       for (const piece of piecesByKind[kind] || []) {
         const { clip, segment } = piece;
-        const selected = this.store.selection?.type === kind && this.store.selection.id === clip.id;
+        const selected = isStoreSelected(this.store, kind, clip.id);
         const originalStart = clip.timing.startTime;
         const originalEnd = originalStart + clip.timing.duration;
         const hasStartHandle = Math.abs(piece.sourceStart - originalStart) < 1e-6;
@@ -600,6 +709,7 @@ class TimelineView {
           title: `${labels[kind]} · 源 ${formatTime(piece.sourceStart)}–${formatTime(piece.sourceEnd)} · 拖动移动，拖两端裁切`,
           'data-effect-id': clip.id,
           'data-effect-kind': kind,
+          'data-selection-type': kind, 'data-selection-id': clip.id,
           onpointerdown: edit('move'),
         },
         element('span', { class: 'effect-tag' }, labels[kind]),
@@ -613,7 +723,9 @@ class TimelineView {
   /// 在输出时间处添加一段手动缩放。位置被已有缩放占用时返回 false。
   addZoomAt(outputTime) {
     const { project, pointerTrack, zoomClips } = this.store;
-    const sourceTime = timeline.locate(this.segments, outputTime).sourceTime;
+    const hit = timeline.locate(this.segments, outputTime);
+    if (!hit) return false;
+    const sourceTime = hit.sourceTime;
     if (zoomClips.some((clip) => sourceTime >= clip.startTime - 0.05 && sourceTime <= zoomCore.effectEndTime(clip) + 0.05)) return false;
     const next = zoomClips.find((clip) => clip.startTime > sourceTime);
     const transition = project.motion.defaultZoomTransitionDuration;

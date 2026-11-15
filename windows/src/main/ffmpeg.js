@@ -62,11 +62,37 @@ async function ensurePreview(sourceFile, previewFile) {
   const job = (async () => {
     const temporary = path.join(path.dirname(previewFile), 'screen.preview.v3.partial.mp4');
     try {
-      // 关键帧每 1 秒一个：默认 x264 的 GOP 会让预览跳转要解码十几秒。
-      await ffmpeg(['-loglevel', 'error', '-i', sourceFile, '-vf', 'fps=60,scale=1280:-2',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '25', '-pix_fmt', 'yuv420p',
+      // 保持 1280 宽/60fps 和 1 秒关键帧。优先使用已通过试编的硬件编码器；
+      // 驱动在真实素材上拒绝工作时，立即回退到 x264 ultrafast。
+      const encoder = await detectEncoder();
+      const common = ['-loglevel', 'error', '-i', sourceFile, '-vf',
+        `fps=60,scale=1280:-2,format=${encoder.name === 'libx264' ? 'yuv420p' : encoder.format}`];
+      const videoArgs = encoder.name === 'h264_nvenc'
+        ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'll', '-rc', 'vbr',
+          '-cq', '28', '-b:v', '4000000', '-maxrate', '8000000', '-bufsize', '8000000']
+        : encoder.args(6_000_000);
+      const hardwareArgs = [...common, ...videoArgs,
         '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
-        '-an', '-movflags', '+faststart', temporary]);
+        '-an', '-movflags', '+faststart', temporary];
+      try {
+        if (encoder.name === 'h264_nvenc') {
+          try {
+            await ffmpeg(['-loglevel', 'error', '-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda',
+              '-i', sourceFile, '-vf', 'scale_cuda=1280:-2:format=nv12', '-r', '60', ...videoArgs,
+              '-g', '60', '-keyint_min', '60', '-an', '-movflags', '+faststart', temporary]);
+          } catch {
+            await ffmpeg(hardwareArgs);
+          }
+        } else await ffmpeg(hardwareArgs);
+      } catch (error) {
+        if (encoder.name === 'libx264') throw error;
+        fs.rmSync(temporary, { force: true });
+        await ffmpeg(['-loglevel', 'error', '-i', sourceFile, '-vf', 'fps=60,scale=1280:-2',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '25', '-pix_fmt', 'yuv420p',
+          '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
+          '-an', '-movflags', '+faststart', temporary]);
+      }
+      fs.rmSync(previewFile, { force: true });
       fs.renameSync(temporary, previewFile);
       return previewFile;
     } catch (error) {
@@ -99,6 +125,7 @@ const ENCODERS = [
 ];
 
 let chosenEncoder = null;
+const gpuConversionProbes = new Map();
 
 /// 逐个试编 10 帧，取第一个在本机真正可用的编码器（驱动过旧时 NVENC 会在这里被跳过）。
 async function detectEncoder() {
@@ -124,18 +151,41 @@ function captureFilter(source, fps) {
   return filter;
 }
 
+function canUseGpuConversion(sourceFilter, bitrate, encoder) {
+  const key = JSON.stringify([binaries.ffmpeg, sourceFilter, bitrate, encoder.name]);
+  if (!gpuConversionProbes.has(key)) {
+    const probe = run(binaries.ffmpeg, [
+      '-hide_banner', '-loglevel', 'error', '-filter_complex', `${sourceFilter},scale_d3d11=format=nv12`,
+      '-frames:v', '2', ...encoder.args(bitrate), '-f', 'null', '-',
+    ]).then((result) => result.code === 0).catch((error) => {
+      gpuConversionProbes.delete(key);
+      throw error;
+    });
+    gpuConversionProbes.set(key, probe);
+  }
+  return gpuConversionProbes.get(key);
+}
+
+async function capturePlan({ source, fps, width, height }) {
+  const encoder = await detectEncoder();
+  const bitrate = exportVideoBitrate(width, height, fps);
+  const sourceFilter = captureFilter(source, fps);
+  const gpuConversion = encoder.name === 'h264_nvenc' && await canUseGpuConversion(sourceFilter, bitrate, encoder);
+  return { encoder, bitrate, sourceFilter, gpuConversion };
+}
+
+async function prepareCapture(options) {
+  const { encoder, gpuConversion } = await capturePlan(options);
+  return { encoder: encoder.label, gpuConversion };
+}
+
 /// 开始采集。firstFrame 在第一帧到达时给出其系统时钟（秒），
 /// 用来把光标、摄像头、音频对齐到屏幕画面的时间轴。
 async function startCapture({ source, fps, file, width, height }) {
-  const encoder = await detectEncoder();
-  const bitrate = exportVideoBitrate(width, height, fps);
-  const gpuConversion = encoder.name === 'h264_nvenc' && (await run(binaries.ffmpeg, [
-    '-hide_banner', '-loglevel', 'error', '-filter_complex', `${captureFilter(source, fps)},scale_d3d11=format=nv12`,
-    '-frames:v', '2', ...encoder.args(bitrate), '-f', 'null', '-',
-  ])).code === 0;
+  const { encoder, bitrate, sourceFilter, gpuConversion } = await capturePlan({ source, fps, width, height });
   // setpts 里的 print(time(0)) 只在第 0 帧执行一次，把首帧系统时钟打到 stderr，PTS 本身不变。
   const conversion = gpuConversion ? 'scale_d3d11=format=nv12' : `hwdownload,format=bgra,${COLOR_FILTER},format=${encoder.format}`;
-  const graph = `${captureFilter(source, fps)},setpts='PTS+0*if(eq(N,0),print(time(0)),0)',${conversion}`;
+  const graph = `${sourceFilter},setpts='PTS+0*if(eq(N,0),print(time(0)),0)',${conversion}`;
   const args = [
     '-hide_banner', '-loglevel', 'info', '-nostats', '-y',
     '-filter_complex', graph,
@@ -283,8 +333,13 @@ async function makeThumbnails(input, output, duration) {
 }
 
 /// 把一条音轨对齐到屏幕时间轴，再按时间线片段裁切、变速、拼接。
-function audioChain(inputIndex, track, segments, sourceDuration, label) {
+function audioChain(inputIndex, track, segments, sourceDuration, outputDuration, label) {
   const filters = [];
+  if (track.kind === 'timeline') {
+    const delay = Math.round(track.startTime * 1000);
+    filters.push(`[${inputIndex}:a]aresample=48000,atrim=start=${track.sourceStart.toFixed(6)}:duration=${track.duration.toFixed(6)},asetpts=PTS-STARTPTS,volume=${track.volume.toFixed(4)},adelay=${delay}:all=1,apad=whole_dur=${outputDuration.toFixed(6)},atrim=duration=${outputDuration.toFixed(6)}[${label}]`);
+    return filters;
+  }
   const aligned = `${label}al`;
   const align = track.offset >= 0
     ? `adelay=${Math.round(track.offset * 1000)}:all=1`
@@ -318,7 +373,7 @@ function buildMuxArguments({ videoFile, frameRate, audioTracks, segments, source
   audioTracks.forEach((track, i) => {
     args.push('-i', track.file);
     const label = `a${i}`;
-    filters.push(...audioChain(inputCount, track, segments, sourceDuration, label));
+    filters.push(...audioChain(inputCount, track, segments, sourceDuration, outputDuration, label));
     labels.push(`[${label}]`);
     inputCount += 1;
   });
@@ -339,6 +394,6 @@ function buildMuxArguments({ videoFile, frameRate, audioTracks, segments, source
 }
 
 module.exports = {
-  resolveBinaries, run, ffmpeg, ensurePreview, checkAvailable, detectEncoder, startCapture, probe,
+  resolveBinaries, run, ffmpeg, ensurePreview, checkAvailable, detectEncoder, prepareCapture, startCapture, probe,
   buildVideoIndex, remuxToMp4, finalizeCamera, finalizeAudio, makeThumbnails, buildMuxArguments,
 };

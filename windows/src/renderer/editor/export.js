@@ -61,6 +61,17 @@ function audioTracks(directory, project) {
   };
   include('microphone', 'isMicrophoneMuted', 'microphoneVolume', media.microphone);
   include('system', 'isSystemMuted', 'systemVolume', media.systemAudio);
+  for (const clip of project.timeline?.audioClips || []) {
+    if (!clip.file || !(clip.sourceEnd > clip.sourceStart) || !(clip.volume > 0)) continue;
+    tracks.push({
+      kind: 'timeline',
+      file: path.join(directory, clip.file),
+      startTime: Math.max(0, Number(clip.startTime) || 0),
+      sourceStart: Math.max(0, Number(clip.sourceStart) || 0),
+      duration: clip.sourceEnd - clip.sourceStart,
+      volume: Math.min(Math.max(Number(clip.volume) || 0, 0), 1),
+    });
+  }
   return tracks;
 }
 

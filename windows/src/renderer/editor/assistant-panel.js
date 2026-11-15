@@ -17,18 +17,16 @@ function renderAssistantPanel(inspector) {
   let configuring = false;
   let turn = 0;
   let pendingMessage = null;
-  let backendChoices = [];
   const forgetPending = () => {
     const index = messages.indexOf(pendingMessage);
     if (index >= 0) messages.splice(index, 1);
     pendingMessage = null;
   };
-  const backend = element('select', { 'aria-label': '本机智能体' });
-  const modelInfo = element('p', { class: 'note assistant-model-info', 'aria-live': 'polite' }, '默认模型未报告');
+  const backend = element('select', { class: 'assistant-backend', 'aria-label': 'AI 助手模型' });
   const status = element('p', { class: 'note', role: 'status' }, '正在检测本机智能体…');
   const transcript = element('div', { class: 'assistant-messages', role: 'log', 'aria-label': '助手对话' });
   const input = element('textarea', { rows: 3, maxlength: 8000, 'aria-label': '发送给 AI 助手', placeholder: '描述剪辑要求，例如：讲述时人像全屏，演示时显示屏幕加摄像头' });
-  const send = element('button', { type: 'submit', class: 'btn primary', disabled: true }, '发送');
+  const send = element('button', { type: 'button', class: 'btn primary', disabled: true }, '发送');
   const stop = element('button', { type: 'button', class: 'btn', hidden: true }, '停止');
   const detect = element('button', { type: 'button', class: 'btn ghost' }, '重新检测');
   const provider = element('select', { 'aria-label': 'API 服务商' },
@@ -44,15 +42,25 @@ function renderAssistantPanel(inspector) {
   const apiStatus = element('p', { class: 'note', role: 'status' });
   const advanced = element('details', { class: 'assistant-api-advanced' }, element('summary', {}, '高级设置'),
     element('label', {}, '协议', protocol), element('label', {}, '接口地址', endpoint));
-  const apiSettings = element('details', { class: 'assistant-api-settings', hidden: true }, element('summary', {}, 'API 设置'),
+  const apiSettings = element('div', { class: 'assistant-api-settings' }, element('p', { class: 'assistant-settings-title' }, 'API 配置'),
     element('label', {}, '服务商', provider), element('label', {}, '模型', model), suggestions, element('label', {}, '密钥', key), advanced,
     element('div', { class: 'assistant-actions' }, save, clear), apiStatus);
+  const settingsToggle = element('button', {
+    type: 'button', class: 'btn ghost assistant-settings-toggle', 'aria-haspopup': 'dialog',
+    'aria-expanded': 'false', 'aria-controls': 'assistant-model-settings',
+  }, '模型设置');
+  const settingsClose = element('button', { type: 'button', class: 'btn ghost' }, '关闭');
+  const settingsDialog = element('dialog', {
+    class: 'assistant-settings-dialog', id: 'assistant-model-settings', 'aria-labelledby': 'assistant-settings-title',
+  },
+  element('div', { class: 'assistant-settings-header' },
+    element('div', {}, element('h3', { id: 'assistant-settings-title' }, '模型设置'),
+      element('p', { class: 'note' }, '本机 Codex / Claude 登录状态由对应 CLI 管理；此处仅检测是否已安装。')),
+    settingsClose),
+  element('div', { class: 'assistant-settings-actions' }, detect), apiSettings);
   const storyboard = element('button', { type: 'button', class: 'btn' }, '分析全片并分镜');
   const trimIntro = element('input', { type: 'checkbox', 'aria-label': '先剪掉开头试音', title: '勾选后按填写秒数裁切开头，再安排分镜' });
   const introSeconds = element('input', { type: 'number', min: 0.1, max: 120, step: 0.1, value: 5, 'aria-label': '开头试音秒数' });
-  const showModel = (info) => {
-    modelInfo.textContent = info?.model ? `${info.modelSource === 'runtime' ? '本次模型' : '配置模型'}：${info.model}` : '默认模型未报告';
-  };
   const updateSuggestions = () => {
     const selected = API_PROVIDERS.find((item) => item.id === provider.value);
     suggestions.replaceChildren(...(selected?.models || []).map((item) => element('option', { value: item.id }, item.label)));
@@ -68,11 +76,11 @@ function renderAssistantPanel(inspector) {
     storyboard.disabled = running || configuring || !ready;
     backend.disabled = running || configuring;
     detect.disabled = running || configuring;
+    settingsToggle.disabled = running || configuring;
     stop.hidden = !running;
     input.disabled = running;
     for (const control of [provider, protocol, endpoint, model, key, save, clear, trimIntro]) control.disabled = running || configuring;
     introSeconds.disabled = running || configuring || !trimIntro.checked;
-    apiSettings.hidden = backend.value !== 'api';
   };
   const loadApi = async () => {
     configuring = true; refresh();
@@ -88,9 +96,6 @@ function renderAssistantPanel(inspector) {
       apiReady = Boolean(config.hasKey && config.baseUrl && config.model);
       key.placeholder = config.hasKey ? '密钥已保存，留空保留原密钥' : '输入 API Key';
       apiStatus.textContent = apiReady ? '已保存，密钥在本机加密存储。' : '填写接口地址、模型和密钥后保存。';
-      if (apiReady) showModel({ model: config.model, modelSource: 'config' });
-      else modelInfo.textContent = '请选择服务商并保存模型配置';
-      apiSettings.open = !apiReady;
     } catch { apiReady = false; apiStatus.textContent = '无法读取 API 配置，请重试。'; }
     finally { configuring = false; refresh(); }
   };
@@ -98,13 +103,16 @@ function renderAssistantPanel(inspector) {
     detect.disabled = true;
     try {
       const choices = await ipcRenderer.invoke('assistant:detect');
-      backendChoices = choices;
       const previous = backend.value;
-      backend.replaceChildren(...choices.filter((item) => item.available).map((item) => element('option', { value: item.id }, item.label)));
+      const availableChoices = choices.filter((item) => item.available && (item.id !== 'api' || item.model));
+      const options = availableChoices.map((item) => element('option', { value: item.id }, item.model ? `${item.label} · ${item.model}` : item.label));
+      if (!options.length) options.push(element('option', { value: '', disabled: true }, '请在模型设置中配置模型'));
+      backend.replaceChildren(...options);
       if ([...backend.options].some((option) => option.value === previous)) backend.value = previous;
-      status.textContent = backend.value ? '修改完成后可撤销。' : '未检测到本机智能体，可使用 API Key。';
+      status.textContent = availableChoices.length
+        ? '已刷新本机 CLI 与已配置的 API 模型选项。'
+        : '未检测到本机智能体或已配置的 API 模型，可在模型设置中配置 API Key。';
       if (backend.value === 'api') await loadApi();
-      else showModel(choices.find((item) => item.id === backend.value));
     } catch (error) { status.textContent = `检测失败：${error.message}`; }
     refresh();
   };
@@ -128,8 +136,6 @@ function renderAssistantPanel(inspector) {
         project: JSON.parse(JSON.stringify(store.project)), playhead: inspector.preview.time, selection: store.selection,
       });
       if (current !== turn) return;
-      showModel(result.model ? result : (backend.value === 'api'
-        ? { model: model.value, modelSource: 'config' } : backendChoices.find((item) => item.id === backend.value)));
       if (expectedTrim !== null) {
         const plan = result.operations.find((operation) => operation.type === 'scene_plan');
         if (!plan || Math.abs((plan.trimStart || 0) - expectedTrim) > 1e-6) throw new Error('助手未按指定的试音裁切秒数生成分镜，本次未应用，请重试');
@@ -165,6 +171,18 @@ function renderAssistantPanel(inspector) {
     input.focus();
   };
   stop.addEventListener('click', cancel);
+  send.addEventListener('click', () => submit());
+  settingsToggle.addEventListener('click', async () => {
+    await loadApi();
+    if (!settingsDialog.open) settingsDialog.showModal();
+    settingsToggle.setAttribute('aria-expanded', 'true');
+    settingsClose.focus();
+  });
+  settingsClose.addEventListener('click', () => settingsDialog.close());
+  settingsDialog.addEventListener('close', () => settingsToggle.setAttribute('aria-expanded', 'false'));
+  settingsDialog.addEventListener('click', (event) => {
+    if (event.target === settingsDialog) settingsDialog.close();
+  });
   window.addEventListener('keydown', (event) => {
     if (inspector.tab === 'assistant' && running && event.key === 'Escape') {
       event.preventDefault(); event.stopImmediatePropagation(); cancel();
@@ -177,11 +195,9 @@ function renderAssistantPanel(inspector) {
   backend.addEventListener('change', () => {
     refresh();
     if (backend.value === 'api') loadApi();
-    else showModel(backendChoices.find((item) => item.id === backend.value));
   });
   const markApiDirty = () => {
     apiReady = false;
-    modelInfo.textContent = '模型配置未保存';
     apiStatus.textContent = '配置有修改，请保存后发送。';
     refresh();
   };
@@ -212,12 +228,13 @@ function renderAssistantPanel(inspector) {
       await ipcRenderer.invoke('assistant:api-save', { protocol: protocol.value, baseUrl: endpoint.value.trim(), model: model.value.trim(), apiKey: key.value.trim() });
       key.value = '';
       await loadApi();
+      await discover();
     } catch (error) { apiReady = false; apiStatus.textContent = error.message || '保存失败'; }
     finally { configuring = false; refresh(); }
   });
   clear.addEventListener('click', async () => {
     configuring = true; refresh();
-    try { await ipcRenderer.invoke('assistant:api-clear'); await loadApi(); }
+    try { await ipcRenderer.invoke('assistant:api-clear'); await loadApi(); await discover(); }
     catch { apiStatus.textContent = '清除失败，请重试。'; }
     finally { configuring = false; refresh(); }
   });
@@ -233,22 +250,20 @@ function renderAssistantPanel(inspector) {
   });
   trimIntro.addEventListener('change', refresh);
   detect.addEventListener('click', discover);
-  const composer = element('form', { class: 'assistant-composer', onsubmit: submit }, input,
-    element('div', { class: 'assistant-actions' }, send, stop));
   const controls = document.getElementById('assistant-controls');
   if (controls) {
-    controls.replaceChildren(backend, detect);
+    controls.replaceChildren(settingsToggle);
     controls.hidden = false;
     inspector.assistantControls = controls;
   }
+  const composer = element('form', { class: 'assistant-composer', onsubmit: (event) => event.preventDefault() }, input,
+    element('div', { class: 'assistant-composer-toolbar' }, backend,
+      element('div', { class: 'assistant-actions assistant-composer-actions' }, send, stop)));
   const panel = element('div', { class: 'assistant-panel' },
-    controls ? null : element('div', { class: 'assistant-actions' }, backend, detect),
-    apiSettings,
-    modelInfo,
     element('div', { class: 'assistant-actions' }, storyboard,
       element('label', { class: 'assistant-intro-option' }, trimIntro, '剪掉开头试音', introSeconds, '秒')),
     element('p', { class: 'note' }, '依据字幕分镜：人像全屏、屏幕加摄像头、屏幕 3D。'),
-    status, transcript, composer);
+    status, transcript, composer, settingsDialog);
   inspector.assistantView = panel;
   discover();
   return [panel];

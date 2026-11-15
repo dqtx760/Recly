@@ -1,15 +1,19 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
+const { PassThrough } = require('node:stream');
 const vm = require('node:vm');
+const childProcess = require('node:child_process');
 
-const sourcePath = path.join(__dirname, '../src/renderer/recorder.js');
-const htmlPath = path.join(__dirname, '../src/renderer/recorder.html');
-const mainPath = path.join(__dirname, '../src/main/main.js');
-const source = fs.readFileSync(sourcePath, 'utf8');
-const html = fs.readFileSync(htmlPath, 'utf8');
+const rendererSource = fs.readFileSync(path.join(__dirname, '../src/renderer/recorder.js'), 'utf8');
+
+async function test(name, body) {
+  await body();
+  console.log(`  ok  ${name}`);
+}
 
 function deferred() {
   let resolve;
@@ -18,360 +22,234 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-class MockElement {
-  constructor(id = '', tagName = 'DIV') {
-    this.id = id;
-    this.tagName = tagName;
-    this.hidden = false;
-    this.disabled = false;
-    this.textContent = '';
-    this.title = '';
-    this.dataset = {};
-    this.children = [];
-    this.listeners = new Map();
-    this.attributes = new Map();
-    this.classList = {
-      values: new Set(),
-      add: (...items) => items.forEach((item) => this.classList.values.add(item)),
-      remove: (...items) => items.forEach((item) => this.classList.values.delete(item)),
-      toggle: (item, force) => {
-        const enabled = force === undefined ? !this.classList.values.has(item) : Boolean(force);
-        if (enabled) this.classList.values.add(item);
-        else this.classList.values.delete(item);
-        return enabled;
-      },
-      contains: (item) => this.classList.values.has(item),
-    };
-  }
-
-  addEventListener(name, handler) {
-    if (!this.listeners.has(name)) this.listeners.set(name, []);
-    this.listeners.get(name).push(handler);
-  }
-
-  click() {
-    if (this.disabled) return;
-    for (const handler of this.listeners.get('click') || []) {
-      handler({ target: this, preventDefault() {}, stopPropagation() {} });
-    }
-  }
-
-  appendChild(child) { this.children.push(child); return child; }
-  setAttribute(name, value) { this.attributes.set(name, String(value)); }
-  getAttribute(name) { return this.attributes.get(name) || ''; }
-  closest() { return null; }
-  querySelector(selector) {
-    if (selector === 'span' || selector === '.rec-label') return this.children.find((child) => child.tagName === 'SPAN') || null;
-    if (selector === 'b') return this.children.find((child) => child.tagName === 'B') || null;
-    if (selector === 'small') return this.children.find((child) => child.tagName === 'SMALL') || null;
-    return null;
-  }
-}
-
-function makeStream({ audio = 0, video = 0 } = {}) {
-  const makeTrack = (kind) => ({ kind, stopped: false, stop() { this.stopped = true; } });
-  const audioTracks = Array.from({ length: audio }, () => makeTrack('audio'));
-  const videoTracks = Array.from({ length: video }, () => makeTrack('video'));
-  return {
-    getTracks: () => [...audioTracks, ...videoTracks],
-    getAudioTracks: () => audioTracks,
-    getVideoTracks: () => videoTracks,
+function createStartHarness({ openStreams, startGate = deferred(), prepareError, commitError } = {}) {
+  const startOffset = rendererSource.indexOf('function beginStartFeedback()');
+  const endOffset = rendererSource.indexOf('async function stop()', startOffset);
+  const startSource = rendererSource.slice(startOffset, endOffset);
+  const state = {
+    starting: false,
+    session: null,
+    environment: { ok: true, encoder: 'test' },
+    selection: { kind: 'display', displayId: 1 },
+    cam: { on: false, deviceId: null },
+    mic: { on: false },
+    sys: { on: false },
+    startError: '',
+    finishing: false,
   };
-}
-
-function createHarness(options = {}) {
-  const ids = [...html.matchAll(/\bid=["']([^"']+)["']/g)].map((match) => match[1]);
-  const elements = new Map(ids.map((id) => [id, new MockElement(id)]));
-  elements.get('busy').hidden = true;
-  elements.get('done').hidden = true;
-  elements.get('start').appendChild(new MockElement('', 'SPAN'));
-  const markerSpan = new MockElement('', 'SPAN');
-  elements.get('marker').appendChild(markerSpan);
-  for (const id of ['hint']) {
-    elements.get(id).appendChild(new MockElement('', 'B'));
-    elements.get(id).appendChild(new MockElement('', 'SMALL'));
-  }
-
-  const sourceButtons = ['display', 'window', 'area'].map((kind) => {
-    const button = new MockElement();
-    button.dataset.source = kind;
-    button.appendChild(new MockElement('', 'SPAN'));
-    return button;
-  });
-
-  const ipcHandlers = new Map();
-  const sends = [];
+  const startButton = { disabled: false, label: '' };
+  const errorMessage = { hidden: true, textContent: '' };
+  const busy = { hidden: true };
   const invokes = [];
-  let now = 1000;
-  const startGate = options.startGate || deferred();
-  const microphoneGate = options.microphoneGate || null;
-  let microphoneOpens = 0;
-
-  const invoke = async (channel, ...args) => {
-    invokes.push({ channel, args });
-    if (channel === 'recorder:displays') return [{ id: 1, label: '主显示器', isPrimary: true, physical: { width: 1920, height: 1080 } }];
-    if (channel === 'config:get-hide-desktop-icons') return false;
-    if (channel === 'app:environment') return { ok: true, encoder: 'h264_nvenc', projectsRoot: 'D:\\Videos\\DogSC' };
-    if (channel === 'config:get-projects-root') return 'D:\\Videos\\DogSC';
-    if (channel === 'config:get-export-root') return '';
-    if (channel === 'recorder:prepare') {
-      if (options.prepareError) throw options.prepareError;
-      return { mediaDirectory: 'D:\\Videos\\DogSC\\test\\media' };
-    }
-    if (channel === 'recorder:start') return startGate.promise;
-    if (channel === 'recorder:commit-start') {
-      if (options.commitError) throw options.commitError;
-      return { officialStartOffset: 3 };
-    }
-    if (channel === 'recorder:stop') return { directory: 'D:\\Videos\\DogSC\\test.dogscproject' };
-    if (channel === 'recorder:cancel') return true;
-    return null;
-  };
-
-  const ipcRenderer = {
-    invoke,
-    send(channel, ...args) { sends.push({ channel, args }); },
-    on(channel, handler) {
-      if (!ipcHandlers.has(channel)) ipcHandlers.set(channel, []);
-      ipcHandlers.get(channel).push(handler);
-    },
-  };
-
-  class MockMediaRecorder {
-    static isTypeSupported() { return true; }
-    constructor(stream) {
-      this.stream = stream;
-      this.state = 'inactive';
-      this.onstart = null;
-      this.onstop = null;
-      this.ondataavailable = null;
-    }
-    start() {
-      this.state = 'recording';
-      queueMicrotask(() => this.onstart?.());
-    }
-    stop() {
-      this.state = 'inactive';
-      queueMicrotask(() => this.onstop?.());
-    }
-    pause() { this.state = 'paused'; }
-    resume() { this.state = 'recording'; }
-  }
-
-  class MockMediaStream {
-    constructor(tracks = []) { this.tracks = tracks; }
-    getTracks() { return this.tracks; }
-    getAudioTracks() { return this.tracks.filter((track) => track.kind === 'audio'); }
-    getVideoTracks() { return this.tracks.filter((track) => track.kind === 'video'); }
-  }
-
-  const saved = {
-    mic: options.mic ?? true,
-    cam: options.cam ?? false,
-    sys: options.sys ?? false,
-  };
-  const body = new MockElement('body');
+  let streamOpens = 0;
+  let recordingStarts = 0;
+  let renders = 0;
+  const elements = new Map([['busy', busy], ['start', startButton]]);
   const context = {
-    Buffer,
+    state,
     Date,
     Promise,
-    performance: { now: () => now },
-    console,
-    localStorage: {
-      getItem: () => JSON.stringify(saved),
-      setItem() {},
+    performance: { now: () => 1000 },
+    $: (id) => id === 'recording-error' ? errorMessage : elements.get(id) || null,
+    show() {},
+    formatTime() {},
+    render() {
+      renders += 1;
+      errorMessage.hidden = !state.startError;
+      errorMessage.textContent = state.startError;
+      startButton.label = state.session ? '结束录制' : state.starting ? '正在准备…' : 'REC';
     },
-    document: {
-      body,
-      getElementById: (id) => elements.get(id) || null,
-      querySelectorAll: (selector) => selector === '.source' ? sourceButtons : [],
+    openStreams: async () => {
+      streamOpens += 1;
+      return openStreams ? openStreams() : { streams: {}, problems: [] };
     },
-    window: { alert() {} },
-    navigator: {
-      mediaDevices: {
-        enumerateDevices: async () => [],
-        getUserMedia: async (constraints) => {
-          if (constraints.audio) {
-            microphoneOpens += 1;
-            if (options.microphoneError) throw options.microphoneError;
-            if (microphoneGate) return microphoneGate.promise;
-            return makeStream({ audio: 1 });
-          }
-          return makeStream({ video: 1 });
-        },
-        getDisplayMedia: async () => makeStream({ audio: 1, video: 1 }),
-      },
-    },
-    MediaRecorder: MockMediaRecorder,
-    MediaStream: MockMediaStream,
+    stopTracks: async () => [],
+    stopInlineCameraPreview: async () => {},
+    requestCameraPreview() {},
+    startTrack() { throw new Error('此测试不应启动附加媒体轨'); },
     setTimeout: () => 1,
     clearTimeout() {},
-    setInterval: () => 1,
-    clearInterval() {},
-    queueMicrotask,
+    ipcRenderer: {
+      invoke: async (channel, ...args) => {
+        invokes.push({ channel, args });
+        if (channel === 'recorder:prepare') {
+          if (prepareError) throw prepareError;
+          return { mediaDirectory: 'test-media' };
+        }
+        if (channel === 'recorder:start') {
+          recordingStarts += 1;
+          return startGate.promise;
+        }
+        if (channel === 'recorder:commit-start') {
+          if (commitError) throw commitError;
+          return { officialStartOffset: 0 };
+        }
+        if (channel === 'recorder:cancel') return true;
+        return null;
+      },
+    },
   };
-  context.global = context;
-  context.require = (id) => {
-    if (id === 'electron') return { ipcRenderer };
-    if (id === './common') return { icon: () => '', formatTime: () => '00:00' };
-    if (id === './editor/shortcuts-modal') return { openShortcutsModal() {} };
-    return require(id);
-  };
-
-  vm.runInNewContext(source, context, { filename: sourcePath });
-
-  const emit = (channel, ...args) => {
-    for (const handler of ipcHandlers.get(channel) || []) handler({}, ...args);
-  };
-  const flush = async (rounds = 8) => {
-    for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setImmediate(resolve));
-  };
-  const visiblePanel = () => ['idle', 'busy', 'done'].find((id) => elements.get(id) && !elements.get(id).hidden);
-
+  vm.runInNewContext(startSource, context, { filename: 'recorder-start-flow.js' });
   return {
-    elements,
-    sends,
+    state,
+    startButton,
+    errorMessage,
     invokes,
-    body,
     startGate,
-    emit,
-    flush,
-    visiblePanel,
-    microphoneOpens: () => microphoneOpens,
+    start: context.start,
+    get streamOpens() { return streamOpens; },
+    get recordingStarts() { return recordingStarts; },
+    get renders() { return renders; },
   };
 }
 
-async function test(name, body) {
-  await body();
-  console.log(`  ok  ${name}`);
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = {
+    write() { setImmediate(() => child.emit('close', 0)); return true; },
+  };
+  child.kill = () => setImmediate(() => child.emit('close', 0));
+  return child;
+}
+
+async function testCapturePrewarm() {
+  const originalSpawn = childProcess.spawn;
+  const ffmpegPath = require.resolve('../src/main/ffmpeg');
+  delete require.cache[ffmpegPath];
+  const spawned = [];
+
+  childProcess.spawn = (binary, args) => {
+    const child = fakeChild();
+    const captureGraph = args[args.indexOf('-filter_complex') + 1] || '';
+    const isGpuProbe = args.includes('-frames:v') && captureGraph.includes('scale_d3d11=format=nv12');
+    const isCapture = captureGraph.includes('setpts=');
+    spawned.push({ binary, args, isGpuProbe, isCapture });
+    if (isCapture) setTimeout(() => child.stderr.emit('data', Buffer.from('[Eval @ 0x1] 123.456\n')), 20);
+    else setImmediate(() => child.emit('close', 0));
+    return child;
+  };
+
+  try {
+    const media = require('../src/main/ffmpeg');
+    media.resolveBinaries('missing-test-resources');
+    await media.detectEncoder();
+
+    const source = { kind: 'area', outputIndex: 0, rect: { x: 0, y: 0, width: 640, height: 360 } };
+    const captureOptions = { source, fps: 60, width: 640, height: 360 };
+    const prepared = await media.prepareCapture(captureOptions);
+    assert.deepEqual(prepared, { encoder: 'NVIDIA NVENC', gpuConversion: true });
+    assert.equal(spawned.filter((item) => item.isGpuProbe).length, 1, '预热应完成两帧 GPU 转换探测');
+    assert.equal(spawned.filter((item) => item.isCapture).length, 0, '预热不得启动持续采集进程');
+
+    const capture = await media.startCapture({ ...captureOptions, file: 'screen.mkv' });
+    let firstFrameReady = false;
+    capture.firstFrame.then(() => { firstFrameReady = true; });
+    await Promise.resolve();
+    assert.equal(firstFrameReady, false, '命中预热缓存也不能虚报首帧就绪');
+    assert.equal(spawned.filter((item) => item.isGpuProbe).length, 1, '首次 startCapture 应复用预热结果');
+    await capture.firstFrame;
+    assert.equal(firstFrameReady, true);
+    await capture.stop();
+    assert.equal(spawned.filter((item) => item.isCapture).length, 1, '预热后仍须启动真实屏幕采集进程');
+
+    const otherSource = { ...source, outputIndex: 1 };
+    await media.prepareCapture({ ...captureOptions, source: otherSource });
+    assert.equal(spawned.filter((item) => item.isGpuProbe).length, 2, '不同显示器输出需要独立探测');
+    const otherCapture = await media.startCapture({ ...captureOptions, source: otherSource, file: 'screen-2.mkv' });
+    await otherCapture.firstFrame;
+    await otherCapture.stop();
+    assert.equal(spawned.filter((item) => item.isGpuProbe).length, 2, '不同条件的预热结果也应由 startCapture 复用');
+    assert.equal(spawned.filter((item) => item.isCapture).length, 2);
+  } finally {
+    childProcess.spawn = originalSpawn;
+    delete require.cache[ffmpegPath];
+  }
 }
 
 (async () => {
-  await test('主控台共用录制按钮并移除独立启动和录制面板', async () => {
+  await test('保留单一录制按钮，不再出现倒计时或重复控制面板', async () => {
+    const html = fs.readFileSync(path.join(__dirname, '../src/renderer/recorder.html'), 'utf8');
     assert.doesNotMatch(html, /id=["']countdown["']/);
     assert.doesNotMatch(html, /id=["'](?:preparing|live|stop)["']/);
-    assert.doesNotMatch(source, /runCountdown|recorder:countdown-show/);
+    assert.doesNotMatch(rendererSource, /runCountdown|recorder:countdown-show/);
   });
 
-  await test('摄像头录制流打开后才关闭悬浮预览请求', async () => {
-    const harness = createHarness({ cam: true, mic: false });
-    await harness.flush();
-    harness.emit('recorder:start');
-    await harness.flush();
-    const feedbackIndex = harness.sends.findIndex((call) => call.channel === 'recorder:startup-feedback');
-    const closePreviewIndex = harness.sends.findIndex((call) => call.channel === 'recorder:camera-preview' && call.args[0]?.visible === false);
-    assert.ok(feedbackIndex >= 0 && closePreviewIndex > feedbackIndex, '应先隐藏窗口，再在录制摄像头流已取得后关闭预览流');
+  await test('等待设备与屏幕首帧时处于准备中，重复开始不重入', async () => {
+    const streamsGate = deferred();
+    const startGate = deferred();
+    const harness = createStartHarness({ openStreams: () => streamsGate.promise, startGate });
+    const pending = harness.start();
+    assert.equal(harness.state.starting, true);
+    assert.equal(harness.state.session, null);
+    assert.equal(harness.startButton.label, '正在准备…');
+
+    await harness.start();
+    assert.equal(harness.streamOpens, 1, '准备中重复触发不得再次打开设备');
+
+    streamsGate.resolve({ streams: {}, problems: [] });
+    for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.recordingStarts, 1);
+    assert.equal(harness.state.starting, true);
+    assert.equal(harness.state.session, null, 'recorder:start 未返回屏幕首帧前不能进入录制状态');
+
+    await harness.start();
+    assert.equal(harness.recordingStarts, 1, '等待屏幕首帧时重复触发不得重入');
+
+    startGate.resolve(true);
+    await pending;
+    assert.equal(harness.state.starting, false);
+    assert.ok(harness.state.session);
+    assert.equal(harness.startButton.label, '结束录制');
   });
 
-  await test('触发后立即隐藏控制台，采集就绪后马上提交起点且重复快捷键不重入', async () => {
-    const microphoneGate = deferred();
-    const harness = createHarness({ microphoneGate });
-    await harness.flush();
+  await test('启动失败后结束准备状态并把错误显示在提示区', async () => {
+    const harness = createStartHarness({ openStreams: async () => { throw new Error('模拟设备打开失败'); } });
+    await harness.start();
+    assert.equal(harness.state.starting, false);
+    assert.equal(harness.state.session, null);
+    assert.match(harness.state.startError, /模拟设备打开失败/);
+    assert.equal(harness.errorMessage.hidden, false);
+    assert.equal(harness.errorMessage.textContent, harness.state.startError);
+    assert.ok(harness.renders >= 2);
+  });
 
-    harness.emit('recorder:start');
-    await harness.flush();
-    assert.equal(harness.visiblePanel(), 'idle');
-    assert.match(harness.elements.get('start').querySelector('.rec-label').textContent, /正在准备录制/);
-    assert.equal(harness.sends[0]?.channel, 'recorder:startup-feedback', '启动事件循环内应先请求隐藏控制台和摄像头预览');
-    assert.equal(harness.sends.some((call) => call.channel === 'recorder:countdown-show'), false);
-    assert.equal(harness.microphoneOpens(), 1);
+  await test('渲染层按真实启动状态显示准备文字和失败提示', async () => {
+    const renderStart = rendererSource.indexOf('function render()');
+    const renderEnd = rendererSource.indexOf('// ------------------------------------------------------------------ 目标源', renderStart);
+    const renderFlow = rendererSource.slice(renderStart, renderEnd);
+    assert.match(renderFlow, /state\.starting\s*\?\s*'正在准备…'/);
+    assert.match(renderFlow, /recording-error[\s\S]*?hidden\s*=\s*!state\.startError/);
+    assert.match(renderFlow, /recording-error[\s\S]*?textContent\s*=\s*state\.startError/);
+  });
 
-    harness.emit('recorder:start');
-    harness.emit('recorder:toggle');
-    await harness.flush();
-    assert.equal(harness.microphoneOpens(), 1, '准备中重复快捷键不得再次打开麦克风');
+  await test('附加轨和屏幕首帧就绪并提交正式起点后才进入录制状态', async () => {
+    const startFlow = rendererSource.slice(rendererSource.indexOf('async function start()'), rendererSource.indexOf('async function stop()'));
+    assert.match(startFlow, /beginStartFeedback\(\);[\s\S]*?await openStreams\(\)/);
+    assert.match(startFlow, /await Promise\.all\(tracks\.map\(\(track\) => track\.started\)\)/);
+    assert.match(startFlow, /await ipcRenderer\.invoke\('recorder:start'\);[\s\S]*?await ipcRenderer\.invoke\('recorder:commit-start'\);[\s\S]*?state\.session =/);
+    assert.ok(startFlow.indexOf('state.session = {') > startFlow.indexOf("ipcRenderer.invoke('recorder:commit-start')"), '正式录制状态只能在提交真实屏幕首帧起点后进入');
+  });
 
-    microphoneGate.resolve(makeStream({ audio: 1 }));
-    await harness.flush();
-    assert.equal(harness.elements.get('start').disabled, true);
-    assert.equal(harness.invokes.filter((call) => call.channel === 'recorder:start').length, 1);
-
+  await test('正式起点提交失败按 recording 阶段清理且不进入录制状态', async () => {
+    const harness = createStartHarness({ commitError: new Error('模拟正式起点提交失败') });
+    const pending = harness.start();
+    for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.recordingStarts, 1);
     harness.startGate.resolve(true);
-    await harness.flush();
-    assert.equal(harness.visiblePanel(), 'idle');
-    assert.equal(harness.invokes.filter((call) => call.channel === 'recorder:commit-start').length, 1);
-    assert.equal(harness.sends.some((call) => call.channel === 'recorder:countdown-show'), false);
-    const end = harness.sends.find((call) => call.channel === 'recorder:startup-feedback-end');
-    assert.equal(end?.args[0]?.success, true);
-    assert.equal(harness.elements.get('start').querySelector('.rec-label').textContent, '结束录制');
-    harness.elements.get('start').click();
-    await harness.flush();
-    assert.equal(harness.invokes.filter((call) => call.channel === 'recorder:stop').length, 1);
-    assert.equal(harness.elements.get('start').querySelector('.rec-label').textContent, '开始录制');
+    await pending;
+    const cancellation = harness.invokes.find((call) => call.channel === 'recorder:cancel');
+    assert.equal(cancellation?.args[0], 'recording');
+    assert.equal(harness.state.starting, false);
+    assert.equal(harness.state.session, null);
+    assert.equal(harness.errorMessage.hidden, false);
+    assert.match(harness.errorMessage.textContent, /模拟正式起点提交失败/);
   });
 
-  await test('启动失败回到待机并结束置顶反馈', async () => {
-    const harness = createHarness({ prepareError: new Error('模拟准备失败') });
-    await harness.flush();
-    harness.emit('recorder:start');
-    await harness.flush();
+  await test('预热当前参数后首次采集复用探测、另有条件重探且仍等待真实首帧', testCapturePrewarm);
 
-    assert.equal(harness.visiblePanel(), 'idle');
-    const end = harness.sends.find((call) => call.channel === 'recorder:startup-feedback-end');
-    assert.equal(end?.args[0]?.success, false);
-  });
-
-  await test('设备打开也处于统一失败清理范围，异常不会把界面锁在准备中', async () => {
-    const startFlow = source.slice(source.indexOf('async function start()'), source.indexOf('async function stop(discard)'));
-    assert.match(startFlow, /try\s*\{\s*\(\{ streams, problems \} = await openStreams\(\)\)/, 'openStreams 必须位于启动流程的 try 内');
-    assert.match(startFlow, /catch \(error\)\s*\{\s*await fail\(error\)/, '设备打开异常必须进入统一失败清理');
-  });
-
-  await test('正式起点提交失败会按 recording 阶段清理并恢复界面', async () => {
-    const harness = createHarness({ commitError: new Error('模拟提交失败') });
-    await harness.flush();
-    harness.emit('recorder:start');
-    await harness.flush();
-    harness.startGate.resolve(true);
-    await harness.flush();
-    assert.equal(harness.visiblePanel(), 'idle');
-    const cancel = harness.invokes.find((call) => call.channel === 'recorder:cancel');
-    assert.equal(cancel?.args[0], 'recording');
-    const end = harness.sends.find((call) => call.channel === 'recorder:startup-feedback-end');
-    assert.equal(end?.args[0]?.success, false);
-  });
-
-  await test('未开启麦克风时明确说明状态，不声称检测到人声', async () => {
-    const harness = createHarness({ mic: false });
-    await harness.flush();
-    harness.emit('recorder:start');
-    await harness.flush();
-    harness.startGate.resolve(true);
-    await harness.flush();
-    assert.equal(harness.elements.get('mic-status').textContent, '关闭');
-  });
-
-  await test('麦克风打开失败时录屏可降级继续，但不提示可以讲话', async () => {
-    const harness = createHarness({ microphoneError: new Error('模拟麦克风被占用') });
-    await harness.flush();
-    harness.emit('recorder:start');
-    await harness.flush();
-    harness.startGate.resolve(true);
-    await harness.flush();
-    assert.equal(harness.visiblePanel(), 'idle');
-    assert.equal(harness.elements.get('mic-status').textContent, '未能打开');
-  });
-
-  await test('主进程立即最小化控制台并隐藏摄像头，提交起点校验发送者', async () => {
-    const main = fs.readFileSync(mainPath, 'utf8');
-    const handlers = main.slice(main.indexOf("ipcMain.on('recorder:startup-feedback'"), main.indexOf("ipcMain.on('window:close'"));
-    assert.match(handlers, /event\.sender\s*!==\s*recorderWindow\.webContents/);
-    assert.match(handlers, /recorderWindow\.minimize\(\)/);
-    assert.match(handlers, /cameraWindow[\s\S]*?cameraWindow\.hide\(\)/);
-    assert.match(main, /recordingStartupFeedbackActive[\s\S]*?ready-to-show[\s\S]*?!recordingStartupFeedbackActive[\s\S]*?showInactive\(\)/, '摄像头窗口晚到的 ready-to-show 也不能在准备阶段重新闪现');
-    assert.match(handlers, /setIgnoreMouseEvents\(true\)/);
-    assert.match(handlers, /setAlwaysOnTop\(false\)/);
-    assert.match(handlers, /setIgnoreMouseEvents\(false\)/);
-    assert.match(handlers, /success[\s\S]*?minimize\(\)/);
-    const commit = main.slice(main.indexOf("ipcMain.handle('recorder:commit-start'"), main.indexOf("ipcMain.handle('recorder:marker'"));
-    assert.match(commit, /event\.sender\s*!==\s*recorderWindow\.webContents/);
-    assert.match(commit, /recording\.commitStart\(\)/);
-    const hideHandler = main.slice(main.indexOf("ipcMain.on('recorder:hide'"), main.indexOf("ipcMain.on('window:close'"));
-    assert.match(hideHandler, /setAlwaysOnTop\(false\)[\s\S]*?hide\(\)/);
-    assert.match(main, /excludeFromCapture\(recorderWindow\)/);
-  });
-
-  console.log('录制启动反馈测试全部通过。');
+  console.log('录制启动反馈与探测缓存测试全部通过。');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

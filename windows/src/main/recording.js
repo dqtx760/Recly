@@ -28,6 +28,7 @@ function listDisplays() {
       isPrimary: display.id === primaryId,
       scaleFactor: display.scaleFactor,
       bounds: display.bounds,
+      workArea: display.workArea,
       physical: screen.dipToScreenRect(null, display.bounds),
     }));
 }
@@ -45,8 +46,17 @@ function defaultProjectName(date = new Date()) {
 }
 
 /// 把界面上的来源选择换成采集参数与"当前采集矩形"（物理像素，供指针归一化）。
-function resolveSource(selection) {
+function resolveSource(selection, activateWindow = true) {
   const displays = listDisplays();
+  const workAreaFor = (display) => {
+    const physicalWorkArea = screen.dipToScreenRect(null, display.workArea);
+    return {
+      x: physicalWorkArea.x - display.physical.x,
+      y: physicalWorkArea.y - display.physical.y,
+      width: physicalWorkArea.width,
+      height: physicalWorkArea.height,
+    };
+  };
   /// 显示器内的一块区域。requested 为相对该显示器左上角的物理像素矩形。
   const areaSource = (display, requested, description) => {
     // H.264 4:2:0 需要偶数宽高。
@@ -66,7 +76,7 @@ function resolveSource(selection) {
     };
   };
   if (selection.kind === 'window') {
-    bringToFront(selection.hwnd);
+    if (activateWindow) bringToFront(selection.hwnd);
     const rects = windowRects(selection.hwnd);
     if (!rects) throw new Error('这个窗口已经关闭或无法访问，请重新选择。');
     // 取窗口可见边界（含标题栏）所在的显示器，超出屏幕的部分裁掉。
@@ -78,14 +88,18 @@ function resolveSource(selection) {
       { source: 'window', title: selection.title || '' });
   }
   const display = displays.find((item) => item.id === selection.displayId) || displays[0];
-  if (selection.kind === 'area') return areaSource(display, selection.rect, { source: 'area' });
-  return {
-    capture: { kind: 'display', outputIndex: display.outputIndex },
-    width: display.physical.width,
-    height: display.physical.height,
-    getRect: () => display.physical,
-    description: { source: 'display', display: display.label },
-  };
+  const workArea = workAreaFor(display);
+  if (selection.kind === 'area') {
+    const left = Math.max(0, selection.rect.x, workArea.x);
+    const top = Math.max(0, selection.rect.y, workArea.y);
+    const right = Math.min(display.physical.width, selection.rect.x + selection.rect.width, workArea.x + workArea.width);
+    const bottom = Math.min(display.physical.height, selection.rect.y + selection.rect.height, workArea.y + workArea.height);
+    if (right - left < 64 || bottom - top < 64) {
+      throw new Error('录制区域与任务栏以外的工作区域没有足够的重叠');
+    }
+    return areaSource(display, { x: left, y: top, width: right - left, height: bottom - top }, { source: 'area' });
+  }
+  return areaSource(display, workArea, { source: 'display' });
 }
 
 class RecordingSession {
@@ -234,7 +248,7 @@ class RecordingSession {
 
     onStage('正在生成视频索引');
     fs.writeFileSync(inMedia('screen.index.json'), JSON.stringify(await media.buildVideoIndex(inMedia('screen.mp4'))));
-    // 缩略图不应阻塞录制完成后的编辑器打开；项目先以无封面状态落盘，后台补写缩略图。
+    // 整理阶段先并发启动缩略图和代理生成，完成后统一写回工程并打开编辑器。
     projectMedia.thumbnails = null;
 
     const events = toSourceTimeline(pointerEvents, this.firstFrameTime, duration);
@@ -263,29 +277,40 @@ class RecordingSession {
     });
     project.markers = this.markers.filter((marker) => marker.time >= officialStart && marker.time <= duration);
     project.export.frameRate = this.frameRate >= 60 ? 60 : 30;
+    project.previewQuality = 'balanced';
     fs.writeFileSync(path.join(this.directory, 'project.json'), JSON.stringify(project, null, 2));
     fs.rmSync(raw, { force: true });
-    const thumbnailsReady = media.makeThumbnails(inMedia('screen.mp4'), inMedia('thumbnails.jpg'), duration)
-      .then((thumbnails) => {
-        const target = path.join(this.directory, 'project.json');
-        const current = JSON.parse(fs.readFileSync(target, 'utf8'));
-        current.media.thumbnails = { ...thumbnails, file: `media/${thumbnails.file}` };
-        fs.writeFileSync(`${target}.thumbnails.tmp`, JSON.stringify(current, null, 2));
-        fs.renameSync(`${target}.thumbnails.tmp`, target);
-        return true;
-      })
+    const thumbnailJob = media.makeThumbnails(inMedia('screen.mp4'), inMedia('thumbnails.jpg'), duration)
+      .then((thumbnails) => ({ thumbnails, ready: true }))
       .catch((error) => {
         console.warn('[DogSC] 缩略图生成失败：', error.message || error);
-        return false;
+        return { thumbnails: null, ready: false };
       });
-    // 编辑器打开后立刻就能播放；准备代理期间若直接放原始 1440p60 素材，画面会落后声音。
-    // 录制结束即后台生成与 project:preview 相同的代理，编辑器打开时直接命中。
+    // 编辑器默认使用低分辨率代理；整理阶段生成完毕再打开编辑器，
+    // 用户首次播放时无需等待从原始 1440p60 素材切换到代理。
+    let previewJob = Promise.resolve(null);
     if (projectMedia.screen.width > 1280 || projectMedia.screen.frameRate > 20) {
-      media.ensurePreview(inMedia('screen.mp4'), inMedia('screen.preview.v3.mp4'))
-        .catch((error) => console.warn('[DogSC] 流畅预览生成失败：', error.message || error));
+      onStage('正在生成流畅预览');
+      previewJob = media.ensurePreview(inMedia('screen.mp4'), inMedia('screen.preview.v3.mp4')).catch((error) => {
+        console.warn('[DogSC] 流畅预览生成失败：', error.message || error);
+        return null;
+      });
     }
+    const [{ thumbnails, ready }, previewFile] = await Promise.all([thumbnailJob, previewJob]);
+    if (previewFile) {
+      const relativePreview = path.relative(this.directory, previewFile).replaceAll(path.sep, '/');
+      projectMedia.screen.preview = relativePreview;
+      project.media.screen.preview = relativePreview;
+    }
+    if (ready) {
+      project.media.thumbnails = { ...thumbnails, file: `media/${thumbnails.file}` };
+    }
+    const target = path.join(this.directory, 'project.json');
+    fs.writeFileSync(`${target}.finish.tmp`, JSON.stringify(project, null, 2));
+    fs.renameSync(`${target}.finish.tmp`, target);
+    const thumbnailsReady = Promise.resolve(ready);
     return { directory: this.directory, project, outputDuration: outputDuration(project.timeline.segments), thumbnailsReady };
   }
 }
 
-module.exports = { RecordingSession, listDisplays, defaultProjectName, PROJECT_EXTENSION };
+module.exports = { RecordingSession, listDisplays, resolveSource, defaultProjectName, PROJECT_EXTENSION };

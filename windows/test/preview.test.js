@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 global.location = { search: '' };
 const { Preview } = require('../src/renderer/editor/preview');
+const makePreviewFixture = () => Object.assign(Object.create(Preview.prototype), { timelineAudio: new Map() });
 
 const node = {
   duration: 10, currentTime: 0, paused: false, seeking: true, playbackRate: 1,
@@ -16,7 +17,7 @@ Object.defineProperty(node, 'currentTime', {
   set(value) { position = value; node.seeks += 1; },
 });
 
-const preview = Object.create(Preview.prototype);
+const preview = makePreviewFixture();
 preview.store = { project: { timeline: { segments: [{ sourceStart: 0, sourceEnd: 10, speed: 1 }] }, audio: {
   isMicrophoneMuted: false, microphoneVolume: 1, isSystemMuted: false, systemVolume: 1,
 } } };
@@ -78,7 +79,7 @@ try {
     duration: 10, currentTime: 2, paused: false, seeking: false, readyState: 4, playbackRate: 1,
     pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
   };
-  const audioSyncPreview = Object.create(Preview.prototype);
+  const audioSyncPreview = makePreviewFixture();
   audioSyncPreview.store = { project: {
     timeline: { segments: [{ sourceStart: 0, sourceEnd: 10, speed: 1 }] },
     audio: { isMicrophoneMuted: false, microphoneVolume: 1, isSystemMuted: true, systemVolume: 0 },
@@ -139,7 +140,7 @@ try {
     play() { this.paused = false; return Promise.resolve(); },
   };
   const transientScreen = { ...syncScreen, currentTime: 2, readyState: 2 };
-  const transientPreview = Object.create(Preview.prototype);
+  const transientPreview = makePreviewFixture();
   transientPreview.store = audioSyncPreview.store;
   transientPreview.time = 2;
   transientPreview.playing = true;
@@ -179,7 +180,7 @@ try {
     duration: 10, currentTime: 5, paused: false, seeking: false, readyState: 4, playbackRate: 1, volume: 1,
     pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
   };
-  const transientCameraPreview = Object.create(Preview.prototype);
+  const transientCameraPreview = makePreviewFixture();
   transientCameraPreview.store = audioSyncPreview.store;
   transientCameraPreview.time = 2;
   transientCameraPreview.playing = true;
@@ -212,7 +213,7 @@ try {
     duration: 10, currentTime: 2, paused: false, seeking: false, readyState: 4, playbackRate: 1, volume: 1,
     pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
   };
-  const recoveryPreview = Object.create(Preview.prototype);
+  const recoveryPreview = makePreviewFixture();
   recoveryPreview.store = audioSyncPreview.store;
   recoveryPreview.time = 2;
   recoveryPreview.playing = true;
@@ -240,7 +241,7 @@ try {
     pause() { this.paused = true; },
     play() { this.paused = false; return Promise.resolve(); },
   };
-  const explicitSeekPreview = Object.create(Preview.prototype);
+  const explicitSeekPreview = makePreviewFixture();
   explicitSeekPreview.store = audioSyncPreview.store;
   explicitSeekPreview.time = 0;
   explicitSeekPreview.playing = true;
@@ -268,7 +269,7 @@ const backgroundNode = {
   pause() { this.paused = true; },
   play() { this.paused = false; return Promise.resolve(); },
 };
-const backgroundPreview = Object.create(Preview.prototype);
+const backgroundPreview = makePreviewFixture();
 backgroundPreview.backgroundVideo = { node: backgroundNode, duration: 2, isLooping: true };
 backgroundPreview.time = 5.5;
 backgroundPreview.playing = false;
@@ -298,7 +299,7 @@ const audibleTrack = {
   duration: 10, currentTime: 2, paused: false, seeking: false, readyState: 4,
   pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
 };
-const waitingPreview = Object.create(Preview.prototype);
+const waitingPreview = makePreviewFixture();
 waitingPreview.store = preview.store;
 waitingPreview.quality = 'full';
 waitingPreview.time = 2;
@@ -358,7 +359,7 @@ Object.defineProperty(driftingCamera, 'playbackRate', {
   get() { return driftingCameraRate; },
   set(value) { driftingCameraRate = value; driftingCamera.rateWrites += 1; },
 });
-const driftPreview = Object.create(Preview.prototype);
+const driftPreview = makePreviewFixture();
 driftPreview.store = {
   project: {
     timeline: { segments: [{ sourceStart: 0, sourceEnd: 10, speed: 1 }] },
@@ -392,7 +393,7 @@ const makeProjectChangeNode = ({ currentTime, duration = 10, readyState = 4 } = 
     play() { this.paused = false; return Promise.resolve(); },
   };
 };
-const projectChangePreview = Object.create(Preview.prototype);
+const projectChangePreview = makePreviewFixture();
 projectChangePreview.store = { project: {
   timeline: { segments: [{ id: 'same-clip', sourceStart: 0, sourceEnd: 10, speed: 1 }] },
   audio: { microphoneVolume: 0.5, systemVolume: 1, isMicrophoneMuted: false, isSystemMuted: false },
@@ -422,7 +423,7 @@ assert.equal(projectChangePreview.microphone.node.seeks, 0, '仅改音量时不�
 assert.equal(projectChangePreview.microphone.node.pauses, 0, '仅改音量时不应暂停麦克风');
 
 const mappedAudioNode = makeProjectChangeNode({ currentTime: 5 });
-const mappedChangePreview = Object.create(Preview.prototype);
+const mappedChangePreview = makePreviewFixture();
 mappedChangePreview.store = { project: {
   timeline: { segments: [{ id: 'same-clip', sourceStart: 0, sourceEnd: 10, speed: 1 }] },
   audio: { microphoneVolume: 0.5, systemVolume: 1, isMicrophoneMuted: false, isSystemMuted: false },
@@ -456,7 +457,7 @@ const bufferedAudio = {
   duration: 10, currentTime: 2, paused: false, seeking: false, readyState: 4, playbackRate: 1, volume: 1,
   pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
 };
-const cameraWaitingPreview = Object.create(Preview.prototype);
+const cameraWaitingPreview = makePreviewFixture();
 cameraWaitingPreview.store = driftPreview.store;
 cameraWaitingPreview.time = 2;
 cameraWaitingPreview.playing = true;
@@ -491,7 +492,7 @@ const slowScreen = {
 };
 const slowMicrophone = { ...bufferedAudio, currentTime: 2, paused: false };
 const slowSystem = { ...bufferedAudio, currentTime: 2, paused: false };
-const slowSeekPreview = Object.create(Preview.prototype);
+const slowSeekPreview = makePreviewFixture();
 slowSeekPreview.store = driftPreview.store;
 slowSeekPreview.time = 2;
 slowSeekPreview.playing = true;
@@ -532,7 +533,7 @@ try {
 }
 
 const hiddenCameraAudio = { ...bufferedAudio, paused: false };
-const hiddenCameraPreview = Object.create(Preview.prototype);
+const hiddenCameraPreview = makePreviewFixture();
 hiddenCameraPreview.store = {
   project: {
     ...cameraWaitingPreview.store.project,
@@ -567,7 +568,7 @@ const mappedVideo = {
   duration: 7, currentTime: 1.5, paused: false, seeking: false, readyState: 4, playbackRate: 2,
   pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
 };
-const mappedPreview = Object.create(Preview.prototype);
+const mappedPreview = makePreviewFixture();
 mappedPreview.store = { project: { timeline: { segments: [{ sourceStart: 0, sourceEnd: 2, speed: 2 }] }, audio: preview.store.project.audio } };
 mappedPreview.time = 0.5;
 mappedPreview.playing = true;
@@ -598,7 +599,7 @@ try {
   global.requestAnimationFrame = oldAnimationFrame;
 }
 
-const preparingPreview = Object.create(Preview.prototype);
+const preparingPreview = makePreviewFixture();
 preparingPreview.store = preview.store;
 preparingPreview.time = 3;
 preparingPreview.playing = false;

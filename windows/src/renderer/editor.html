@@ -13,6 +13,7 @@
     <span class="spacer"></span>
     <button class="btn ghost" id="scene-preset" title="场景预设">场景预设 ▾</button>
     <button class="btn" id="shortcuts" title="快捷键">快捷键</button>
+    <button class="btn" id="materials" title="素材"></button>
     <button class="btn primary" id="export"></button>
     <div class="window-controls">
       <button class="win-btn" id="editor-min" title="最小化"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.2"/></svg></button>
@@ -29,17 +30,9 @@
           <button class="btn ghost icon-only" id="undo" title="撤销（Ctrl+Z）"></button>
           <button class="btn ghost icon-only" id="redo" title="重做（Ctrl+Shift+Z）"></button>
         </div>
-        <button class="btn ghost quality-control" id="quality" title="切换预览质量">流畅预览</button>
+        <button class="btn ghost icon-only preview-fullscreen-button" id="preview-fullscreen" type="button" title="全屏观看（Esc 退出）" aria-label="全屏观看（Esc 退出）" aria-pressed="false"></button>
       </div>
       <div class="canvas-wrap" id="canvas-wrap"><canvas id="preview" tabindex="0" aria-label="画面预览"></canvas></div>
-      <div class="preview-toolbar" id="preview-toolbar">
-        <button class="btn ghost icon-only preview-add-button" id="preview-add-button" type="button" title="添加到画面" aria-label="添加到画面" aria-haspopup="menu" aria-expanded="false">+</button>
-        <div class="preview-add-menu card" id="preview-add-menu" role="menu" hidden>
-          <button type="button" id="preview-add-mosaic" role="menuitem">柔化或突出</button>
-          <button type="button" id="preview-add-sticker" role="menuitem">导入贴图…</button>
-          <button type="button" id="preview-paste-image" role="menuitem">粘贴图片</button>
-        </div>
-      </div>
     </section>
     <aside class="inspector card">
       <nav class="rail" id="rail" aria-label="编辑功能"></nav>
@@ -48,6 +41,7 @@
         <div id="assistant-controls" class="assistant-head-controls" hidden></div>
       </div>
       <div id="inspector"></div>
+      <div id="materials-panel" class="materials-panel" hidden></div>
     </aside>
   </main>
 
@@ -69,7 +63,7 @@
       <span class="clock"><b id="clock-now">00:00.00</b> / <span id="clock-total">00:00.00</span></span>
       <span class="spacer"></span>
       <button class="btn ghost icon-only" id="zoom-out" title="缩小时间线"></button>
-      <input id="timeline-zoom" type="range" min="0" max="1" step="0.001" value="0">
+      <input id="timeline-zoom" type="range" min="-1" max="1" step="0.001" value="0">
       <button class="btn ghost icon-only" id="zoom-in" title="放大时间线"></button>
     </div>
     <div class="tracks">
@@ -77,6 +71,7 @@
         <div class="label ruler-label"></div>
         <div class="label subtitle" id="label-subtitles"></div>
         <div class="label" id="label-screen"></div>
+        <div class="label" id="label-audio"></div>
         <div class="label" id="label-zoom"></div>
         <div class="label" id="label-screen-motion"></div>
         <div class="label" id="label-camera-motion"></div>
@@ -88,6 +83,7 @@
           <div class="ruler" id="ruler"></div>
           <div class="lane subtitles" id="lane-subtitles"></div>
           <div class="lane screen" id="lane-screen"></div>
+          <div class="lane audio" id="lane-audio"></div>
           <div class="lane zoom" id="lane-zoom" title="双击空白处添加缩放"></div>
           <div class="lane effect screen-motion" id="lane-screen-motion" title="双击空白处添加屏幕 3D 动效"></div>
           <div class="lane effect camera-motion" id="lane-camera-motion" title="双击空白处添加摄像头动效"></div>

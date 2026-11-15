@@ -12,19 +12,21 @@ const media = require('./ffmpeg');
 const { createAgentService } = require('./agent-service');
 const { createAssistantService } = require('./assistant-service');
 const { TranscriptionManager } = require('./transcription');
-const { RecordingSession, listDisplays, PROJECT_EXTENSION } = require('./recording');
+const { RecordingSession, listDisplays, resolveSource, PROJECT_EXTENSION } = require('./recording');
 const { copyProjectToFolder } = require('./project-copy');
 const { normalizeProject } = require('../core/model');
 const { outputDuration } = require('../core/timeline');
 
 const { registerPresetsIpc } = require('./presets');
 const { registerUpdaterIpc } = require('./updater');
-const { getProjectsRoot, getHideDesktopIconsDuringRecording, registerConfigIpc } = require('./config');
+const { getProjectsRoot, getExportRoot, getHideDesktopIconsDuringRecording, registerConfigIpc } = require('./config');
 const { automaticExportPath } = require('./export-path');
-const { trashProjects } = require('./project-trash');
-const { importAsset, readClipboardImage } = require('./asset-import');
+const { trashProjects, trashSelectedProjects, trashEditorProject } = require('./project-trash');
+const { createWindowCloseTracker } = require('./window-close-tracker');
+const { importAsset, importAudio, readClipboardImage } = require('./asset-import');
+const { listBuiltInMusic, importBuiltInMusic } = require('./music-library');
+const { registerMaterialsIpc } = require('./materials');
 const {
-  autoHideTaskbar,
   restoreTaskbar,
   setupTaskbarSafetyHooks,
   registerTaskbarIpc,
@@ -44,19 +46,27 @@ const windowsIconPath = app.isPackaged
   : path.join(__dirname, '..', '..', 'assets', 'AppIconMaster.png');
 let defaultRecorderIcon = null;
 let recordingRecorderIcon = null;
+let recordingOverlayIcon = null;
 const MEMO_MIN_WIDTH = 420;
 const MEMO_MIN_HEIGHT = 160;
+const MEMO_HEADER_TOP = 6;
+const MEMO_HEADER_HEIGHT = 38;
+const MEMO_HEADER_EDGE_GUTTER = 12;
 // 自测产生的项目放在临时目录，不进用户的项目库。
 const projectsRoot = () => (SELF_TEST ? path.join(app.getPath('temp'), 'dogsc-selftest') : getProjectsRoot());
 
 let tray = null;
 let recorderWindow = null;
+let recorderExpandedBounds = null;
 let libraryWindow = null;
 let cameraWindow = null;
+const cameraWindowCloseTracker = createWindowCloseTracker();
 let cameraPreviewRequest = { visible: false, deviceId: null, requestId: 0 };
-let recordingStartupFeedbackActive = false;
 let memoWindow = null;
 let memoResizeState = null;
+let memoEditing = false;
+let memoMouseEventsIgnored = false;
+let memoMouseThroughTimer = null;
 let windowSourcesCache = null;
 let windowSourcesPending = null;
 const editorWindows = new Map();
@@ -72,24 +82,6 @@ function initShortcuts() {
     recordPause: () => {
       if (recorderWindow && !recorderWindow.isDestroyed()) {
         recorderWindow.webContents.send('recorder:pause');
-      }
-    },
-    recordMarker: () => {
-      if (recording && recording.addMarker()) {
-        if (recorderWindow && !recorderWindow.isDestroyed()) {
-          recorderWindow.webContents.send('recorder:marker-added', recording.markers.length);
-        }
-      }
-    },
-    recordDiscard: () => {
-      if (recorderWindow && !recorderWindow.isDestroyed()) {
-        recorderWindow.webContents.send('recorder:discard');
-      } else if (recording) {
-        const sessionState = recording;
-        recording = null;
-        restoreTaskbar();
-        updateTrayState();
-        sessionState.discard().catch(() => {});
       }
     },
   });
@@ -123,6 +115,7 @@ function getRecorderIcon(recordingActive) {
 
   const size = 64;
   const bitmap = Buffer.from(defaultRecorderIcon.resize({ width: size, height: size, quality: 'best' }).toBitmap());
+  const overlay = Buffer.alloc(size * size * 4);
   const centerX = 52;
   const centerY = 12;
   const innerRadius = 7.8;
@@ -148,6 +141,11 @@ function getRecorderIcon(recordingActive) {
 
       // Windows NativeImage bitmap buffers use BGRA channel order.
       const index = (y * size + x) * 4;
+      const coveredSamples = redSamples + whiteSamples;
+      overlay[index] = Math.round((48 * redSamples + 255 * whiteSamples) / coveredSamples);
+      overlay[index + 1] = Math.round((55 * redSamples + 255 * whiteSamples) / coveredSamples);
+      overlay[index + 2] = 255;
+      overlay[index + 3] = Math.round(255 * coverage);
       const remaining = 1 - coverage;
       bitmap[index] = Math.round((48 * redSamples + 255 * whiteSamples) / sampleCount + bitmap[index] * remaining);
       bitmap[index + 1] = Math.round((55 * redSamples + 255 * whiteSamples) / sampleCount + bitmap[index + 1] * remaining);
@@ -157,13 +155,17 @@ function getRecorderIcon(recordingActive) {
   }
 
   recordingRecorderIcon = nativeImage.createFromBitmap(bitmap, { width: size, height: size, scaleFactor: 1 });
+  recordingOverlayIcon = nativeImage.createFromBitmap(overlay, { width: size, height: size, scaleFactor: 1 })
+    .crop({ x: 40, y: 0, width: 24, height: 24 }).resize({ width: 16, height: 16, quality: 'best' });
   return recordingRecorderIcon.isEmpty() ? defaultRecorderIcon : recordingRecorderIcon;
 }
 
 function updateRecorderTaskbarIcon() {
   if (!recorderWindow || recorderWindow.isDestroyed()) return;
-  const icon = getRecorderIcon(Boolean(recording || startingRecording));
+  const active = Boolean(recording);
+  const icon = getRecorderIcon(active);
   if (!icon.isEmpty()) recorderWindow.setIcon(icon);
+  if (process.platform === 'win32') recorderWindow.setOverlayIcon(active ? recordingOverlayIcon : null, active ? '正在录制' : '');
 }
 
 function createWindow(file, options = {}, query = {}) {
@@ -179,15 +181,19 @@ function createWindow(file, options = {}, query = {}) {
   return win;
 }
 
-/// 录制条、备忘录、摄像头预览都不进入本软件自己的录制画面（WDA_EXCLUDEFROMCAPTURE）。
+// 空闲时允许截图，录制期间排除控制窗口，避免它们进入成片。
 function excludeFromCapture(win, keepOnTop = false) {
-  win.setContentProtection(true);
+  win.setContentProtection(hasRecordingWork());
   if (keepOnTop) win.setAlwaysOnTop(true, 'screen-saver');
 }
 
 function updateTrayState() {
   updateRecorderTaskbarIcon();
+  for (const win of [recorderWindow, cameraWindow, memoWindow, ...completionWindows.values()]) {
+    if (win && !win.isDestroyed()) win.setContentProtection(hasRecordingWork());
+  }
   if (!tray || tray.isDestroyed()) return;
+  tray.setImage(getRecorderIcon(Boolean(recording)));
   const isRecording = Boolean(recording || startingRecording || finishingRecording);
   const hasUnfinishedRecording = hasRecordingWork();
   const tooltip = isRecording ? 'Recly: 录制中 (Ctrl+Alt+R 停止)' : 'Recly 屏幕录制';
@@ -252,23 +258,32 @@ function showRecorder() {
     return recorderWindow;
   }
   const area = screen.getPrimaryDisplay().workArea;
-  const width = 480;
-  const height = 678;
+  const width = 800;
+  const height = 600;
   recorderWindow = createWindow('recorder.html', {
     width, height,
     useContentSize: true,
     x: Math.round(area.x + (area.width - width) / 2),
     y: Math.round(area.y + (area.height - height) / 2),
     center: true,
-    frame: false, transparent: true, resizable: false, maximizable: false, fullscreenable: false, skipTaskbar: false, hasShadow: false,
+    frame: false, transparent: true, resizable: true, minWidth: 720, minHeight: 540, maximizable: false, fullscreenable: false, skipTaskbar: false, hasShadow: false,
     title: 'Recly',
   });
+  recorderExpandedBounds = null;
   updateRecorderTaskbarIcon();
   recorderWindow.setIgnoreMouseEvents(false);
   excludeFromCapture(recorderWindow);
   recorderWindow.once('ready-to-show', () => recorderWindow.show());
   recorderWindow.on('show', () => {
-    if (!recorderWindow.webContents.isLoading()) recorderWindow.webContents.send('recorder:shown');
+    updateRecorderTaskbarIcon();
+    if (!recorderWindow.webContents.isLoading()) {
+      recorderWindow.webContents.send('recorder:shown');
+      recorderWindow.webContents.send('recorder:memo-state', Boolean(memoWindow && !memoWindow.isDestroyed()));
+    }
+  });
+  recorderWindow.on('restore', updateRecorderTaskbarIcon);
+  recorderWindow.on('hide', () => {
+    if (!recorderWindow.webContents.isLoading()) recorderWindow.webContents.send('recorder:hidden');
   });
   recorderWindow.on('close', (event) => {
     if (hasRecordingWork()) {
@@ -295,17 +310,37 @@ function showLibrary() {
   libraryWindow.on('closed', () => { libraryWindow = null; });
 }
 
+function showRecorderHistory() {
+  const win = showRecorder();
+  const sendHistoryRequest = () => {
+    if (recorderWindow === win && !win.isDestroyed()) win.webContents.send('recorder:show-history');
+  };
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', sendHistoryRequest);
+  else sendHistoryRequest();
+}
+
+function ensureRecorderTaskbarPresence() {
+  if (!recorderWindow || recorderWindow.isDestroyed()
+    || recorderWindow.isVisible() || recorderWindow.isMinimized()) return false;
+  recorderWindow.showInactive();
+  recorderWindow.minimize();
+  return true;
+}
+
 function openEditor(directory) {
-  if (recorderWindow && !recorderWindow.isDestroyed()) {
-    recorderWindow.hide();
-  }
   const existing = editorWindows.get(directory);
   if (existing && !existing.isDestroyed()) {
     existing.show();
     existing.focus();
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.hide();
     return existing;
   }
-  const win = createWindow('editor.html', { width: 1480, height: 940, minWidth: 1100, minHeight: 700, frame: false, title: `${path.basename(directory, PROJECT_EXTENSION)} — Recly` }, { project: directory });
+  const area = recorderWindow && !recorderWindow.isDestroyed()
+    ? screen.getDisplayMatching(recorderWindow.getBounds()).workArea
+    : screen.getPrimaryDisplay().workArea;
+  const width = Math.min(area.width, Math.max(960, Math.round(area.width * 0.7)));
+  const height = Math.min(area.height, Math.max(540, Math.round(area.height * 0.78)));
+  const win = createWindow('editor.html', { width, height, x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + (area.height - height) / 2), minWidth: Math.min(960, area.width), minHeight: Math.min(540, area.height), frame: false, title: `${path.basename(directory, PROJECT_EXTENSION)} — Recly` }, { project: directory });
   const editorSender = win.webContents;
   const editorSenderId = editorSender.id;
   editorSender.once('destroyed', () => {
@@ -315,7 +350,10 @@ function openEditor(directory) {
     // Keep the encoder lock until its process has actually stopped.
     if (activeExport) activeExport.kill();
   });
-  win.once('ready-to-show', () => { win.maximize(); win.show(); });
+  win.webContents.once('did-finish-load', () => {
+    win.show();
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.hide();
+  });
   win.on('closed', () => {
     editorWindows.delete(directory);
     if (agentService) agentService.rendererClosed(directory);
@@ -425,9 +463,9 @@ function toggleCameraPreview(visible, deviceId, requestId) {
   cameraPreviewRequest = { visible, deviceId, requestId };
   if (!visible) {
     const closingWindow = cameraWindow;
+    const closePromise = cameraWindowCloseTracker.close(closingWindow);
     cameraWindow = null;
-    if (closingWindow && !closingWindow.isDestroyed()) closingWindow.close();
-    return;
+    return closePromise;
   }
   if (cameraWindow && !cameraWindow.isDestroyed()) {
     if (!cameraWindow.webContents.isLoading()) sendCameraDeviceRequest(cameraWindow);
@@ -441,7 +479,7 @@ function toggleCameraPreview(visible, deviceId, requestId) {
   cameraWindow = newCameraWindow;
   excludeFromCapture(newCameraWindow, true);
   newCameraWindow.once('ready-to-show', () => {
-    if (!recordingStartupFeedbackActive) newCameraWindow.showInactive();
+    newCameraWindow.showInactive();
   });
   newCameraWindow.webContents.once('did-finish-load', () => sendCameraDeviceRequest(newCameraWindow));
   newCameraWindow.on('closed', () => {
@@ -452,26 +490,79 @@ function toggleCameraPreview(visible, deviceId, requestId) {
 function toggleMemo() {
   if (memoWindow && !memoWindow.isDestroyed()) {
     memoWindow.close();
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.webContents.send('recorder:memo-state', false);
     return;
   }
-  const area = screen.getPrimaryDisplay().workArea;
-  memoWindow = createWindow('memo.html', {
-    width: 480, height: 300, minWidth: MEMO_MIN_WIDTH, minHeight: MEMO_MIN_HEIGHT, x: area.x + area.width - 480 - 36, y: area.y + 80,
+  const area = recorderWindow && !recorderWindow.isDestroyed()
+    ? screen.getDisplayMatching(recorderWindow.getBounds()).workArea
+    : screen.getPrimaryDisplay().workArea;
+  const width = 560;
+  const height = 360;
+  const store = path.join(app.getPath('userData'), 'memo.json');
+  let initialMemoEditing = true;
+  try {
+    const savedMemo = JSON.parse(fs.readFileSync(store, 'utf8'));
+    initialMemoEditing = typeof savedMemo.text !== 'string' || !savedMemo.text.trim();
+  } catch {
+    // 首次使用时默认可编辑。
+  }
+  const newMemoWindow = createWindow('memo.html', {
+    width, height, minWidth: MEMO_MIN_WIDTH, minHeight: MEMO_MIN_HEIGHT, x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + (area.height - height) / 2),
     frame: false, transparent: true, resizable: true, skipTaskbar: true, hasShadow: false,
-  }, { store: path.join(app.getPath('userData'), 'memo.json') });
-  excludeFromCapture(memoWindow, true);
-  memoWindow.once('ready-to-show', () => memoWindow.show());
-  memoWindow.on('closed', () => {
-    memoWindow = null;
+  }, { store });
+  memoWindow = newMemoWindow;
+  memoEditing = initialMemoEditing;
+  memoMouseEventsIgnored = false;
+  if (memoMouseThroughTimer) clearInterval(memoMouseThroughTimer);
+  memoMouseThroughTimer = setInterval(syncMemoMouseThrough, 16);
+  syncMemoMouseThrough();
+  excludeFromCapture(newMemoWindow, true);
+  newMemoWindow.once('ready-to-show', () => {
+    if (memoWindow !== newMemoWindow) return;
+    newMemoWindow.show();
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.webContents.send('recorder:memo-state', true);
+  });
+  newMemoWindow.on('closed', () => {
+    if (memoWindow === newMemoWindow) {
+      memoWindow = null;
+      if (memoMouseThroughTimer) clearInterval(memoMouseThroughTimer);
+      memoMouseThroughTimer = null;
+      memoEditing = false;
+      memoMouseEventsIgnored = false;
+    }
     memoResizeState = null;
+    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.webContents.send('recorder:memo-state', false);
   });
 }
 
+function syncMemoMouseThrough() {
+  const win = memoWindow;
+  if (!win || win.isDestroyed()) return;
+  const bounds = win.getBounds();
+  const cursor = screen.getCursorScreenPoint();
+  const inHeader = cursor.x >= bounds.x + MEMO_HEADER_EDGE_GUTTER
+    && cursor.x < bounds.x + bounds.width - MEMO_HEADER_EDGE_GUTTER
+    && cursor.y >= bounds.y + MEMO_HEADER_TOP
+    && cursor.y < bounds.y + MEMO_HEADER_TOP + MEMO_HEADER_HEIGHT;
+  const ignore = !memoEditing && !inHeader;
+  if (memoMouseEventsIgnored === ignore) return;
+  memoMouseEventsIgnored = ignore;
+  win.setIgnoreMouseEvents(ignore, { forward: true });
+}
+
 function closeRecordingOverlays() {
-  toggleCameraPreview(false, cameraPreviewRequest.deviceId, cameraPreviewRequest.requestId);
+  try {
+    toggleCameraPreview(false, cameraPreviewRequest.deviceId, cameraPreviewRequest.requestId);
+  } catch (error) {
+    console.warn('[DogSC] 摄像头预览窗口关闭失败：', error.message || error);
+  }
   const closingMemo = memoWindow;
   memoWindow = null;
   memoResizeState = null;
+  if (memoMouseThroughTimer) clearInterval(memoMouseThroughTimer);
+  memoMouseThroughTimer = null;
+  memoEditing = false;
+  memoMouseEventsIgnored = false;
   if (closingMemo && !closingMemo.isDestroyed()) closingMemo.close();
 }
 
@@ -632,6 +723,8 @@ function listProjects() {
     const directory = path.join(root, entry.name);
     try {
       const project = normalizeProject(JSON.parse(fs.readFileSync(path.join(directory, 'project.json'), 'utf8')));
+      const recordingFile = path.join(directory, project.media.screen.file);
+      const recordingSize = fs.existsSync(recordingFile) ? fs.statSync(recordingFile).size : 0;
       projects.push({
         directory,
         name: project.name || path.basename(directory, PROJECT_EXTENSION),
@@ -639,6 +732,8 @@ function listProjects() {
         duration: outputDuration(project.timeline.segments),
         width: project.media.screen.width,
         height: project.media.screen.height,
+        recordingFile,
+        sizeText: formatFileSize(recordingSize),
         thumbnails: project.media.thumbnails ? { ...project.media.thumbnails, file: path.join(directory, project.media.thumbnails.file) } : null,
       });
     } catch { /* 录制未完成或已损坏的目录不列出 */ }
@@ -646,10 +741,16 @@ function listProjects() {
   return projects.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
 
+function formatFileSize(size) {
+  if (size >= 1024 ** 3) return `${(size / 1024 ** 3).toFixed(1)} GB`;
+  if (size >= 1024 ** 2) return `${(size / 1024 ** 2).toFixed(1)} MB`;
+  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${size} B`;
+}
+
 async function trashProject(directory) {
-  const editor = editorWindows.get(directory);
-  if (editor && !editor.isDestroyed()) editor.close();
-  await shell.trashItem(directory);
+  const editor = getEditorWindow(directory);
+  await trashEditorProject(editor, directory, (projectDirectory) => shell.trashItem(projectDirectory));
 }
 
 /// Windows 自带壁纸，对应 macOS 版的"系统壁纸"背景来源。
@@ -852,6 +953,14 @@ function registerIpc() {
     menu.popup({ window: BrowserWindow.fromWebContents(event.sender), callback: () => resolve(chosen) });
   }));
 
+  ipcMain.handle('recorder:warmup', async (event, { selection, frameRate }) => {
+    if (!recorderWindow || recorderWindow.isDestroyed() || event.sender !== recorderWindow.webContents) throw new Error('无权准备录制');
+    if (!environment.ok) throw new Error(environment.reason);
+    if (hasRecordingWork()) throw new Error('当前录制尚未结束');
+    const source = resolveSource(selection, false);
+    return media.prepareCapture({ source: source.capture, fps: frameRate, width: source.width, height: source.height });
+  });
+
   // 录制分两步启动：先建好项目目录，让录制条把摄像头、麦克风、系统声音先录起来，
   // 再开始屏幕采集。这样附加轨一定早于屏幕首帧，成片从第一帧起就有画中画和声音。
   ipcMain.handle('recorder:prepare', (event, { selection, frameRate }) => {
@@ -873,18 +982,11 @@ function registerIpc() {
     startingRecording = sessionState;
     updateTrayState();
     setCompletionWindowsVisible(false);
-    let sessionStartInvoked = false;
     let started;
     try {
-      autoHideTaskbar();
-      sessionStartInvoked = true;
       started = await sessionState.start();
+      recording = sessionState;
     } catch (error) {
-      if (!sessionStartInvoked) {
-        try { await sessionState.discard(); } catch (cleanupError) {
-          console.warn('[DogSC] 录制启动前清理失败：', cleanupError.message || cleanupError);
-        }
-      }
       restoreTaskbar();
       setCompletionWindowsVisible(true);
       throw error;
@@ -892,7 +994,6 @@ function registerIpc() {
       startingRecording = null;
       updateTrayState();
     }
-    recording = sessionState;
     updateTrayState();
     return started;
   });
@@ -903,19 +1004,20 @@ function registerIpc() {
     if (!recording) throw new Error('当前没有正在录制的会话');
     return { officialStartOffset: recording.commitStart() };
   });
-  ipcMain.handle('recorder:marker', () => (recording && recording.addMarker() ? recording.markers.length : 0));
   ipcMain.handle('recorder:stop', async (event, tracks) => {
     if (!recording) throw new Error('当前没有在录制');
     const sessionState = recording;
     recording = null;
     finishingRecording = sessionState;
     closeRecordingOverlays();
-    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.hide();
     let result;
     let finishInvoked = false;
     try {
       updateTrayState();
       restoreTaskbar();
+      // 用户可能在录制期间把主控台收进托盘。整理素材时恢复一个最小化的
+      // 任务栏入口，但不抢焦点；编辑器真正显示后再由 openEditor 隐藏它。
+      ensureRecorderTaskbarPresence();
       finishInvoked = true;
       result = await sessionState.finish(tracks, (stage) => event.sender.send('recorder:stage', stage));
     } catch (error) {
@@ -927,6 +1029,7 @@ function registerIpc() {
       sessionState.restoreDesktopIcons();
       restoreTaskbar();
       setCompletionWindowsVisible(true);
+      showRecorder();
       throw error;
     } finally {
       finishingRecording = null;
@@ -936,17 +1039,6 @@ function registerIpc() {
     result.thumbnailsReady?.then(() => {
       if (libraryWindow && !libraryWindow.isDestroyed()) libraryWindow.webContents.send('library:refresh');
     });
-    const { media: recorded } = result.project;
-    const completion = {
-      directory: result.directory,
-      name: result.project.name,
-      duration: result.outputDuration,
-      thumbnailUrl: fs.existsSync(path.join(result.directory, 'media', 'thumbnails.jpg'))
-        ? pathToFileURL(path.join(result.directory, 'media', 'thumbnails.jpg')).href
-        : '',
-    };
-    showRecordingComplete(completion);
-    setCompletionWindowsVisible(true);
     if (result.thumbnailsReady) {
       const thumbnailPromise = result.thumbnailsReady.then((ready) => {
         if (!ready) return;
@@ -960,6 +1052,8 @@ function registerIpc() {
         () => completionThumbnailPromises.delete(result.directory),
       );
     }
+    const { media: recorded } = result.project;
+    openEditor(result.directory);
     return {
       directory: result.directory, name: result.project.name, duration: result.outputDuration,
       recorded: { camera: Boolean(recorded.camera), microphone: Boolean(recorded.microphone), system: Boolean(recorded.systemAudio) },
@@ -1001,7 +1095,24 @@ function registerIpc() {
     await completionThumbnailPromises.get(source);
     return copyProjectToFolder(source, dialogResult.filePaths[0]);
   });
-  ipcMain.on('recorder:camera-preview', (event, { visible, deviceId, requestId }) => toggleCameraPreview(visible, deviceId, requestId));
+  ipcMain.on('recorder:camera-preview', (event, { visible, deviceId, requestId }) => {
+    try {
+      toggleCameraPreview(visible, deviceId, requestId);
+    } catch (error) {
+      console.warn('[DogSC] 摄像头预览窗口关闭失败：', error.message || error);
+    }
+  });
+  ipcMain.handle('recorder:release-camera-preview', async () => {
+    await toggleCameraPreview(false, cameraPreviewRequest.deviceId, cameraPreviewRequest.requestId);
+    await cameraWindowCloseTracker.waitForPending();
+  });
+  ipcMain.on('camera:preview-frame', (event, frame) => {
+    if (!recorderWindow || recorderWindow.isDestroyed() || event.sender !== recorderWindow.webContents) return;
+    if (!cameraWindow || cameraWindow.isDestroyed() || !cameraPreviewRequest.visible) return;
+    if (!frame || frame.requestId !== cameraPreviewRequest.requestId || typeof frame.dataUrl !== 'string') return;
+    if (frame.dataUrl.length > 256 * 1024 || !frame.dataUrl.startsWith('data:image/jpeg;base64,')) return;
+    if (!cameraWindow.webContents.isLoading()) cameraWindow.webContents.send('camera:frame', frame);
+  });
   ipcMain.on('camera:status', (event, status) => {
     if (!status || !cameraWindow || cameraWindow.isDestroyed()) return;
     if (event.sender !== cameraWindow.webContents || status.requestId !== cameraPreviewRequest.requestId || !cameraPreviewRequest.visible) return;
@@ -1014,31 +1125,34 @@ function registerIpc() {
   ipcMain.on('memo:resize-end', (event) => {
     if (memoResizeState && event.sender === memoResizeState.win.webContents) memoResizeState = null;
   });
-  ipcMain.on('recorder:library', () => showLibrary());
-  ipcMain.on('recorder:show', () => showRecorder());
-  ipcMain.on('recorder:startup-feedback', (event) => {
-    if (!recorderWindow || recorderWindow.isDestroyed() || event.sender !== recorderWindow.webContents) return;
-    recordingStartupFeedbackActive = true;
-    recorderWindow.setAlwaysOnTop(false);
-    recorderWindow.setIgnoreMouseEvents(true);
-    recorderWindow.minimize();
-    if (cameraWindow && !cameraWindow.isDestroyed()) cameraWindow.hide();
-    updateTrayState();
+  ipcMain.on('memo:editing', (event, editing) => {
+    const win = memoWindow;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents || typeof editing !== 'boolean') return;
+    memoEditing = editing;
+    syncMemoMouseThrough();
   });
-  ipcMain.on('recorder:startup-feedback-end', (event, { success } = {}) => {
-    if (!recorderWindow || recorderWindow.isDestroyed() || event.sender !== recorderWindow.webContents) return;
-    recordingStartupFeedbackActive = false;
-    recorderWindow.setAlwaysOnTop(false);
-    recorderWindow.setIgnoreMouseEvents(false);
-    updateTrayState();
-    if (success) {
-      recorderWindow.minimize();
-    } else {
-      recorderWindow.show();
-      recorderWindow.focus();
-      if (cameraPreviewRequest.visible && cameraWindow && !cameraWindow.isDestroyed()) cameraWindow.showInactive();
+  ipcMain.on('recorder:library', () => showRecorderHistory());
+  ipcMain.handle('recorder:set-collapsed', (event, { collapsed, height }) => {
+    const win = recorderWindow;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) throw new Error('录制窗口不可用');
+    if (collapsed) {
+      if (!recorderExpandedBounds) recorderExpandedBounds = win.getBounds();
+      const compactHeight = Math.max(160, Math.min(350, Math.ceil(Number(height) || 200)));
+      win.setResizable(true);
+      win.setMinimumSize(720, compactHeight);
+      win.setSize(win.getBounds().width, compactHeight);
+    } else if (recorderExpandedBounds) {
+      const current = win.getBounds();
+      const area = screen.getDisplayMatching(current).workArea;
+      const expandedHeight = Math.min(recorderExpandedBounds.height, area.height);
+      win.setResizable(true);
+      win.setMinimumSize(720, 540);
+      win.setBounds({ ...current, y: Math.max(area.y, Math.min(current.y, area.y + area.height - expandedHeight)), height: expandedHeight });
+      recorderExpandedBounds = null;
     }
+    return win.getBounds();
   });
+  ipcMain.on('recorder:show', () => showRecorder());
   ipcMain.on('recorder:hide', () => {
     if (recorderWindow && !recorderWindow.isDestroyed()) {
       recorderWindow.setAlwaysOnTop(false);
@@ -1057,6 +1171,35 @@ function registerIpc() {
   });
 
   ipcMain.handle('project:list', () => listProjects());
+  ipcMain.handle('recording:exports-list', () => {
+    const directory = getExportRoot();
+    if (!directory || !fs.existsSync(directory)) return { directory, items: [] };
+    let entries = [];
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return { directory, items: [] }; }
+    const items = entries.filter((entry) => entry.isFile() && /\.(mp4|mkv|mov|webm)$/i.test(entry.name)).map((entry) => {
+      const file = path.join(directory, entry.name);
+      try {
+        const stat = fs.statSync(file);
+        return { file, name: entry.name, modifiedAt: stat.mtimeMs, sizeText: formatFileSize(stat.size) };
+      } catch { return null; }
+    }).filter(Boolean).sort((a, b) => b.modifiedAt - a.modifiedAt);
+    return { directory, items: items.slice(0, 30) };
+  });
+  ipcMain.handle('recording:export-trash', async (event, file) => {
+    const directory = getExportRoot();
+    if (!directory || typeof file !== 'string') return false;
+    const root = path.resolve(directory);
+    const target = path.resolve(file);
+    if (path.dirname(target).toLowerCase() !== root.toLowerCase() || !/\.(mp4|mkv|mov|webm)$/i.test(target) || !fs.existsSync(target) || !fs.lstatSync(target).isFile()) return false;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question', buttons: ['移到回收站', '取消'], defaultId: 1, cancelId: 1,
+      message: `把「${path.basename(target)}」移到回收站？`, detail: '需要时可以从回收站还原。',
+    });
+    if (response !== 0) return false;
+    await shell.trashItem(target);
+    return true;
+  });
   ipcMain.handle('project:open', (event, directory) => { openEditor(directory); });
   ipcMain.handle('project:read', (event, directory) => normalizeProject(JSON.parse(fs.readFileSync(path.join(directory, 'project.json'), 'utf8'))));
   ipcMain.handle('project:preview', async (event, directory) => {
@@ -1064,7 +1207,7 @@ function registerIpc() {
     const source = project.media.screen;
     const sourceFile = path.join(directory, source.file);
     if (source.width <= 1280 && source.frameRate <= 20) return sourceFile;
-    return media.ensurePreview(sourceFile, path.join(directory, 'media', 'screen.preview.v3.mp4'));
+    return media.ensurePreview(sourceFile, path.join(directory, source.preview || 'media/screen.preview.v3.mp4'));
   });
   ipcMain.handle('project:write', (event, { directory, project }) => {
     // 缩略图在录制完成后后台生成；编辑器先保存时不能把已生成的封面覆盖掉。
@@ -1091,6 +1234,25 @@ function registerIpc() {
     if (response !== 0) return false;
     await trashProject(directory);
     return true;
+  });
+  ipcMain.handle('project:trash-selected', async (event, directories) => {
+    return trashSelectedProjects({
+      requestedDirectories: directories,
+      availableDirectories: listProjects().map((project) => project.directory),
+      confirm: async (total) => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'question',
+          buttons: ['移到回收站', '取消'],
+          defaultId: 1,
+          cancelId: 1,
+          message: `把选中的 ${total} 个项目移到回收站？`,
+          detail: '项目和其中的录制素材会一起移到回收站，需要时可以从回收站还原。',
+        });
+        return response === 0;
+      },
+      trashProject,
+    });
   });
   ipcMain.handle('project:trash-all', async (event) => {
     const projects = listProjects();
@@ -1131,7 +1293,34 @@ function registerIpc() {
     }
     return importAsset({ directory, kind, file }, media, nativeImage);
   });
+  const musicRoot = app.isPackaged ? path.join(process.resourcesPath, 'music') : path.join(__dirname, '..', '..', 'assets', 'music');
+  ipcMain.handle('music:list', (event, { directory }) => {
+    requireEditorRequest(event, directory);
+    return listBuiltInMusic(musicRoot);
+  });
+  ipcMain.handle('music:add', (event, { directory, id }) => {
+    const projectDirectory = requireEditorRequest(event, directory);
+    return importBuiltInMusic({ root: musicRoot, directory: projectDirectory, id }, media);
+  });
+  ipcMain.handle('project:import-audio', async (event, { directory }) => {
+    const projectDirectory = requireEditorRequest(event, directory);
+    const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: '添加音乐或音频', properties: ['openFile'],
+      filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'webm', 'flac', 'mp4'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return importAudio({ directory: projectDirectory, file: result.filePaths[0] }, media);
+  });
+  ipcMain.handle('project:save-audio-recording', async (event, { directory, data }) => {
+    const projectDirectory = requireEditorRequest(event, directory);
+    const validData = data instanceof Uint8Array || data instanceof ArrayBuffer;
+    if (!validData) throw Object.assign(new Error('配音数据无效'), { code: 'INVALID_PARAMS' });
+    const buffer = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+    if (!buffer.length || buffer.length > 256 * 1024 * 1024) throw Object.assign(new Error('配音文件为空或超过 256 MB'), { code: 'INVALID_PARAMS' });
+    return importAudio({ directory: projectDirectory, buffer, name: '配音' }, media);
+  });
   ipcMain.handle('system:wallpapers', () => listWallpapers());
+  registerMaterialsIpc({ ipcMain, app, safeStorage, dialog, BrowserWindow, nativeImage, media, editorDirectoryForSender });
   ipcMain.handle('dialog:open-image', async (event) => {
     const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), { title: '选择背景图片', properties: ['openFile'], filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'] }] });
     return result.canceled ? null : result.filePaths[0];
@@ -1180,6 +1369,16 @@ function registerIpc() {
   });
   ipcMain.on('export:cancel', (event) => { if (activeExport && activeExportSession?.sender === event.sender) activeExport.kill(); });
   ipcMain.on('shell:open', (event, target) => shell.openPath(target));
+  ipcMain.handle('shell:open-url', async (_event, target) => {
+    try {
+      const url = new URL(String(target));
+      if (url.protocol !== 'https:') return false;
+      await shell.openExternal(url.href);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   registerPresetsIpc(ipcMain);
   registerUpdaterIpc(ipcMain, shell);
   registerConfigIpc(ipcMain, dialog);

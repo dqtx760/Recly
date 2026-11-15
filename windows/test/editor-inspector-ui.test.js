@@ -144,11 +144,12 @@ function createStore() {
     endGesture() { if (this.gesture) { this.gesture = null; this.emit('history'); } },
     select(selection) { this.selection = selection; this.emit('selection'); },
     getClip(type, id) {
-      const pools = { sticker: this.project.timeline.stickerClips, mosaic: this.project.timeline.mosaicClips };
+      const pools = { sticker: this.project.timeline.stickerClips, mosaic: this.project.timeline.mosaicClips, audio: this.project.timeline.audioClips };
       return pools[type]?.find((item) => item.id === id) || null;
     },
     get selectedSticker() { return this.selection?.type === 'sticker' ? this.getClip('sticker', this.selection.id) : null; },
     get selectedMosaic() { return this.selection?.type === 'mosaic' ? this.getClip('mosaic', this.selection.id) : null; },
+    get selectedAudioClip() { return this.selection?.type === 'audio' ? this.getClip('audio', this.selection.id) : null; },
     get selectedZoom() {
       return this.selection?.type === 'zoom'
         ? this.project.zoomAnimations.find((item) => item.id === this.selection.id) || null
@@ -189,8 +190,9 @@ Module._load = function loadForInspector(request, parent, isMain) {
     parentPath?.endsWith('renderer\\editor\\inspector.js')
     || parentPath?.endsWith('renderer\\editor\\subtitles-panel.js')
     || parentPath?.endsWith('renderer\\editor\\assistant-panel.js')
+    || parentPath?.endsWith('renderer\\editor\\music-library-panel.js')
   )) {
-    return { element, fileUrl: (file) => file };
+    return { element, fileUrl: (file) => file, icon: () => '', formatTime: (value) => String(value) };
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -215,7 +217,7 @@ test('画面设置合并摄像头与样机并保留各分组滚动位置', () =>
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('canvas');
-  assert.deepEqual(root.querySelectorAll('.frame-tabs button').map((button) => button.textContent), ['摄像头', '背景', '布局']);
+  assert.deepEqual(root.querySelectorAll('.frame-tabs button').map((button) => button.textContent), ['摄像头', '背景', '布局', '光标']);
   assert.equal(root.querySelector('[data-frame-tab="camera"]').getAttribute('aria-selected'), 'true');
   root.querySelector('[data-frame-tab="background"]').click();
   assert.equal(root.querySelector('[data-frame-tab="background"]').getAttribute('aria-selected'), 'true');
@@ -239,33 +241,26 @@ test('画面设置合并摄像头与样机并保留各分组滚动位置', () =>
   assert.equal(root.scrollTop, 28);
 });
 
-test('其他分组保留声音和光标入口及各自滚动位置，兼容旧入口', () => {
+test('光标移到画面分组，兼容原入口并保留滚动位置', () => {
   const store = createStore();
   store.pointerTrack = [];
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
   inspector.show('audio');
-
   assert.equal(inspector.tab, 'other');
-  assert.equal(inspector.otherTab, 'audio');
-  assert.deepEqual(root.querySelectorAll('.other-tabs button').map((button) => button.textContent), ['声音', '光标']);
-  assert.equal(root.querySelector('[data-other-tab="audio"]').getAttribute('aria-selected'), 'true');
-  assert.ok(findByText(root, '.section', '麦克风'));
+  assert.equal(root.querySelectorAll('.other-tabs button').length, 0);
   root.scrollTop = 84;
-
-  root.querySelector('[data-other-tab="cursor"]').click();
-  assert.equal(inspector.otherTab, 'cursor');
+  inspector.show('cursor');
+  assert.equal(inspector.tab, 'canvas');
+  assert.equal(inspector.canvasTab, 'cursor');
   assert.equal(root.scrollTop, 0);
   assert.ok(findByText(root, '.section', '样式'));
+  assert.equal(root.querySelector('[data-frame-tab="cursor"]').getAttribute('aria-selected'), 'true');
   root.scrollTop = 28;
-
-  root.querySelector('[data-other-tab="audio"]').click();
-  assert.equal(root.scrollTop, 84);
-  inspector.show('cursor');
-  assert.equal(inspector.tab, 'other');
-  assert.equal(root.scrollTop, 28);
   inspector.show('audio');
   assert.equal(root.scrollTop, 84);
+  inspector.show('cursor');
+  assert.equal(root.scrollTop, 28);
 });
 
 test('AI 助手应用时间线选择时切换到对应检查器并同步顶部分类', () => {
@@ -539,23 +534,59 @@ test('requestEffect返回创建Promise供预览添加菜单捕获错误', () => 
   assert.equal(inspector.requestEffect('mosaic'), expected);
 });
 
-test('声音面板只允许麦克风放大到 400%，系统声音仍封顶 100%', () => {
+test('音频页仅保留两个操作，原项目音量与片段覆盖保持不变', () => {
   const store = createStore();
-  store.project.media.microphone = { file: 'microphone.wav', duration: 20 };
-  store.project.media.systemAudio = { file: 'system.wav', duration: 20 };
-  store.project.audio.microphoneVolume = 1;
-  const segment = store.project.timeline.segments[0];
-  store.select({ type: 'segment', id: segment.id });
+  store.project.audio.microphoneVolume = 2.2;
+  store.project.audio.systemVolume = 0.6;
+  store.project.timeline.segments[0].audio = { microphoneVolume: 1.3 };
+  const saved = JSON.stringify({ audio: store.project.audio, segment: store.project.timeline.segments[0].audio });
   const root = new MockElement('div');
   const inspector = new Inspector(store, { sourceTime: 0 }, root, { textContent: '' });
+  let voiceovers = 0, music = 0;
+  inspector.toggleVoiceoverRecording = () => { voiceovers += 1; };
+  inspector.addMusic = () => { music += 1; };
   inspector.show('audio');
+  const buttons = root.querySelectorAll('button');
+  assert.deepEqual(buttons.map((button) => button.textContent), ['录制配音', '添加音乐']);
+  assert.equal(root.querySelectorAll('input[type="range"]').length, 0);
+  buttons.forEach((button) => button.click());
+  assert.equal(voiceovers, 1);
+  assert.equal(music, 1);
+  assert.equal(JSON.stringify({ audio: store.project.audio, segment: store.project.timeline.segments[0].audio }), saved);
+});
 
-  const ranges = root.querySelectorAll('input[type="range"]');
-  assert.equal(ranges.length, 4, '应显示全局与片段两组麦克风、系统音量');
-  assert.equal(ranges[0].getAttribute('max'), '4', '全局麦克风滑杆上限为 400%');
-  assert.equal(ranges[1].getAttribute('max'), '1', '全局系统声音滑杆上限为 100%');
-  assert.equal(ranges[2].getAttribute('max'), '4', '片段麦克风滑杆上限为 400%');
-  assert.equal(ranges[3].getAttribute('max'), '1', '片段系统声音滑杆上限为 100%');
+test('添加音乐后选中片段显示中文百分比音量滑块并写回项目', () => {
+  const store = createStore();
+  const preview = { time: 2, seek(time) { this.time = time; } };
+  const root = new MockElement('div');
+  const inspector = new Inspector(store, preview, root, { textContent: '' });
+  inspector.addAudioClip({ file: 'media/music.mp3', name: '背景音乐.mp3', duration: 12 }, 'music');
+
+  assert.equal(inspector.tab, 'other');
+  assert.equal(store.selectedAudioClip.name, '背景音乐.mp3');
+  const volumeField = root.querySelectorAll('.field').find((field) => field.textContent.includes('音量'));
+  assert.ok(volumeField, '选中导入音乐后检查器应显示音量控制');
+  const slider = volumeField.querySelector('input[type="range"]');
+  assert.ok(slider, '音量应可通过滑块直接调整');
+  assert.equal(volumeField.textContent, '音量100%');
+  assert.equal(slider.getAttribute('min'), '0');
+  assert.equal(slider.getAttribute('max'), '1');
+
+  const originalClip = store.selectedAudioClip;
+  store.beginGesture();
+  store.project = model.normalizeProject(JSON.parse(JSON.stringify(store.project)));
+  store.emit('project');
+  assert.notEqual(store.selectedAudioClip, originalClip, '恢复项目会用新对象替换原音频片段');
+  slider.value = '0.37';
+  slider.dispatchEvent('input');
+  assert.equal(store.selectedAudioClip.volume, 0.37);
+  assert.equal(volumeField.textContent, '音量37%');
+
+  store.project.timeline.audioClips = [];
+  store.emit('project');
+  slider.value = '0.2';
+  assert.doesNotThrow(() => slider.dispatchEvent('input'), '片段被删除后遗留的滑块事件应安全忽略');
+  assert.equal(store.project.timeline.audioClips.length, 0);
 });
 
 test('摄像头形状使用可视化卡片并按主片段独立覆盖或恢复全局', () => {
@@ -574,7 +605,7 @@ test('摄像头形状使用可视化卡片并按主片段独立覆盖或恢复�
   assert.equal(inspector.title.textContent, '画面');
   assert.equal(root.querySelectorAll('.camera-shape-option').length, 6);
   assert.deepEqual(root.querySelectorAll('.camera-shape-option').map((button) => button.getAttribute('data-shape')),
-    ['fullscreen', 'circle', 'horizontal', 'vertical', 'original', 'square']);
+    ['fullscreen', 'square', 'vertical', 'horizontal', 'original', 'circle']);
   assert.ok(root.querySelectorAll('.camera-shape-option').every((button) => button.getAttribute('aria-pressed') !== null));
   assert.match(root.textContent, /整段默认/);
 

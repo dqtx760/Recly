@@ -6,152 +6,91 @@
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
   /* 预览窗只用于录制时看自己：它不进入录制画面，成片里的摄像头在编辑器里排版。 */
   .bubble { -webkit-app-region: drag; position: absolute; inset: 10px; border-radius: 50%; overflow: hidden; background: #1b1c20; box-shadow: 0 0 0 3px #fff, 0 8px 22px rgba(0, 0, 0, 0.35); }
-  video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  img { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
 </style>
 <body>
-  <div class="bubble"><video id="video" autoplay muted playsinline></video></div>
+  <div class="bubble"><img id="preview" alt=""></div>
   <script>
     'use strict';
     const { ipcRenderer } = require('electron');
-    const video = document.getElementById('video');
+    const preview = document.getElementById('preview');
     const NO_FRAME_TIMEOUT_MS = 8000;
+    let request = null;
     let generation = 0;
-    let stream = null;
     let frameTimer = null;
-    let frameRequest = null;
-    let trackEndListeners = [];
     let frameConfirmed = false;
+    let pendingFrame = null;
 
-    function report(request, status, error = null, message = '') {
+    function report(status, error = null, message = '') {
+      if (!request) return;
       ipcRenderer.send('camera:status', {
         requestId: request.requestId,
         deviceId: request.deviceId || null,
-        status,
-        error,
-        message,
+        status, error, message,
       });
     }
 
-    function stopStream() {
-      const oldStream = stream;
-      stream = null;
-      if (video.srcObject === oldStream) {
-        video.pause();
-        video.srcObject = null;
-      }
-      if (oldStream) oldStream.getTracks().forEach((track) => track.stop());
-    }
-
-    function clearFrameWait() {
+    function cleanup() {
       if (frameTimer !== null) clearTimeout(frameTimer);
       frameTimer = null;
-      if (frameRequest) {
-        if (frameRequest.type === 'video-frame') video.cancelVideoFrameCallback(frameRequest.id);
-        else video.removeEventListener('loadeddata', frameRequest.handler);
-      }
-      frameRequest = null;
+      pendingFrame = null;
+      preview.onload = null;
+      preview.onerror = null;
+      preview.removeAttribute('src');
     }
 
-    function clearTrackEndListeners() {
-      for (const { track, handler } of trackEndListeners) track.removeEventListener('ended', handler);
-      trackEndListeners = [];
-    }
-
-    function cleanup() {
-      clearFrameWait();
-      clearTrackEndListeners();
-      stopStream();
-    }
-
-    function fail(request, ownGeneration, error, message) {
-      if (ownGeneration !== generation) return;
-      cleanup();
-      report(request, 'error', error, message);
-    }
-
-    function waitForFirstFrame(request, ownGeneration) {
-      let settled = false;
-      const ready = () => {
-        if (settled || ownGeneration !== generation) return;
-        settled = true;
-        frameConfirmed = true;
-        clearFrameWait();
-        report(request, 'ready');
-      };
-      if (video.readyState >= 2 && video.videoWidth > 0) {
-        ready();
-        return;
-      }
-      if (typeof video.requestVideoFrameCallback === 'function') {
-        const id = video.requestVideoFrameCallback(() => {
-          frameRequest = null;
-          ready();
-        });
-        frameRequest = { type: 'video-frame', id };
-      } else {
-        const handler = () => {
-          if (video.readyState >= 2 && video.videoWidth > 0) ready();
-        };
-        frameRequest = { type: 'loadeddata', handler };
-        video.addEventListener('loadeddata', handler);
-      }
-    }
-
-    async function open(request) {
-      const ownGeneration = ++generation;
+    function fail(error, message) {
+      generation += 1;
       cleanup();
       frameConfirmed = false;
-      report(request, 'checking');
-      frameTimer = setTimeout(() => {
-        if (ownGeneration !== generation || frameConfirmed) return;
-        generation += 1;
-        cleanup();
-        report(request, 'error', 'no_frame', '摄像头未能在限定时间内提供画面');
-      }, NO_FRAME_TIMEOUT_MS);
-      const device = request.deviceId && request.deviceId !== 'default'
-        ? { deviceId: { exact: request.deviceId } }
-        : {};
-      try {
-        const acquired = await navigator.mediaDevices.getUserMedia({
-          video: { ...device, width: { ideal: 1280 }, height: { ideal: 720 } },
-        });
-        if (ownGeneration !== generation) {
-          acquired.getTracks().forEach((track) => track.stop());
-          return;
-        }
-        stream = acquired;
-        video.srcObject = acquired;
-        for (const track of acquired.getVideoTracks()) {
-          const onEnded = () => {
-            if (ownGeneration !== generation || stream !== acquired) return;
-            generation += 1;
-            cleanup();
-            report(request, 'error', 'device_ended', '摄像头已断开或停止提供画面');
-          };
-          track.addEventListener('ended', onEnded);
-          trackEndListeners.push({ track, handler: onEnded });
-        }
-        const playing = video.play();
-        if (playing && typeof playing.catch === 'function') playing.catch(() => {});
-        waitForFirstFrame(request, ownGeneration);
-      } catch (cause) {
-        if (ownGeneration !== generation) return;
-        if (cause && cause.name === 'NotAllowedError') {
-          fail(request, ownGeneration, 'permission_denied', '摄像头权限被拒绝');
-        } else if (cause && cause.name === 'NotFoundError') {
-          fail(request, ownGeneration, 'no_device', '没有找到可用摄像头');
-        } else if (cause && (cause.name === 'NotReadableError' || cause.name === 'TrackStartError')) {
-          fail(request, ownGeneration, 'device_in_use_or_unreadable', '摄像头被占用或无法读取');
-        } else {
-          fail(request, ownGeneration, 'unavailable', '无法读取所选摄像头');
-        }
-      }
+      report('error', error, message);
     }
 
-    ipcRenderer.on('camera:device', (event, request) => open(request));
+    function armTimeout() {
+      if (frameTimer !== null) clearTimeout(frameTimer);
+      frameTimer = setTimeout(() => {
+        fail(frameConfirmed ? 'frame_stalled' : 'no_frame', '摄像头未能持续提供新画面');
+      }, NO_FRAME_TIMEOUT_MS);
+    }
+
+    function displayFrame(dataUrl) {
+      const ownGeneration = generation;
+      preview.onload = () => {
+        if (ownGeneration !== generation) return;
+        if (!frameConfirmed) {
+          frameConfirmed = true;
+          report('ready');
+        }
+        armTimeout();
+        const next = pendingFrame;
+        pendingFrame = null;
+        preview.onload = null;
+        if (next) displayFrame(next);
+      };
+      preview.onerror = () => {
+        if (ownGeneration === generation) fail('invalid_frame', '摄像头预览画面无法显示');
+      };
+      preview.src = dataUrl;
+    }
+
+    ipcRenderer.on('camera:device', (event, nextRequest) => {
+      generation += 1;
+      cleanup();
+      request = nextRequest;
+      frameConfirmed = false;
+      report('checking');
+      armTimeout();
+    });
+    ipcRenderer.on('camera:frame', (event, frame) => {
+      if (!request || !frame || frame.requestId !== request.requestId || typeof frame.dataUrl !== 'string'
+        || !frame.dataUrl.startsWith('data:image/jpeg;base64,')) return;
+      if (preview.onload) pendingFrame = frame.dataUrl;
+      else displayFrame(frame.dataUrl);
+    });
     window.addEventListener('beforeunload', () => {
       generation += 1;
       cleanup();
+      request = null;
     });
   </script>
 </body>

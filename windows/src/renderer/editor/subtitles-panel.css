@@ -19,7 +19,12 @@
 .subtitle-animation-card span { font-size: 24px; font-weight: 700; }
 .subtitle-animation-card.active { border-color: var(--accent); background: var(--accent-soft); }
 .subtitles-panel [hidden] { display: none; }
-.subtitles-tabs { margin-top: 8px; }
+.subtitles-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 8px; }
+.subtitle-translation { display: grid; gap: 6px; }
+.subtitle-translation h4 { margin: 0 0 2px; }
+.subtitle-translation .subtitles-note { margin-bottom: 0; }
+.subtitle-translation-api { display: grid; gap: 4px; }
+.subtitle-translation select { max-width: 160px; }
 .subtitles-search .subtitles-field { grid-template-columns: 44px minmax(0, 1fr); }
 .subtitles-search input { min-width: 0; width: 100%; height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-soft); color: var(--ink); }
 .subtitles-heading, .subtitles-list-heading, .subtitle-cue-heading, .subtitles-actions { display: flex; align-items: center; gap: 7px; }

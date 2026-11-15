@@ -2,6 +2,7 @@
 // 编辑器状态：项目文档、选中项、撤销栈与自动保存。
 
 const { ipcRenderer } = require('electron');
+const { uid } = require('../../core/model');
 const { orderedClips } = require('../../core/zoom');
 const { loadPointerTrack } = require('./export');
 
@@ -14,7 +15,8 @@ class Store {
     this.revision = Number.isSafeInteger(project.revision) && project.revision >= 0 ? project.revision : 0;
     this.project.revision = this.revision;
     this.pointerTrack = loadPointerTrack(directory, project);
-    this.selection = null; // { type: 'segment' | 'zoom' | 'screen' | 'camera' | 'mosaic' | 'sticker', id }
+    this.selection = null; // 兼容既有检查器的主选中项
+    this.selections = []; // 时间线多选：[{ type, id }]，selection 始终指向第一项
     this.listeners = new Set();
     this.undoStack = [];
     this.redoStack = [];
@@ -74,10 +76,8 @@ class Store {
     this.project.media = media; // 素材引用不随撤销变化
     this.revision += 1;
     this.project.revision = this.revision;
-    if (this.selection) {
-      const pool = this.clipPool(this.selection.type);
-      if (!pool.some((item) => item.id === this.selection.id)) this.selection = null;
-    }
+    this.selections = this.selections.filter((selection) => this.clipPool(selection.type).some((item) => item.id === selection.id));
+    this.selection = this.selections[0] || null;
     this.afterChange();
   }
 
@@ -90,12 +90,32 @@ class Store {
       camera: this.project.timeline.cameraMotionClips,
       mosaic: this.project.timeline.mosaicClips,
       sticker: this.project.timeline.stickerClips,
+      audio: this.project.timeline.audioClips,
     };
     return pools[type] || [];
   }
 
   getClip(type, id) {
     return this.clipPool(type).find((item) => item.id === id) || null;
+  }
+
+  splitAudioClip(id, outputTime) {
+    const clip = this.getClip('audio', id);
+    if (!clip || !Number.isFinite(outputTime)) return false;
+    const clipStart = Number(clip.startTime) || 0;
+    const sourceStart = Number(clip.sourceStart) || 0;
+    const sourceEnd = Number(clip.sourceEnd ?? clip.duration);
+    const sourceTime = sourceStart + outputTime - clipStart;
+    if (!Number.isFinite(sourceEnd) || sourceTime - sourceStart < 0.05 || sourceEnd - sourceTime < 0.05) return false;
+
+    const right = { ...clip, id: uid(), startTime: outputTime, sourceStart: sourceTime };
+    this.mutate((project) => {
+      const index = project.timeline.audioClips.findIndex((item) => item.id === id);
+      if (index < 0) return;
+      project.timeline.audioClips[index].sourceEnd = sourceTime;
+      project.timeline.audioClips.splice(index + 1, 0, right);
+    });
+    return true;
   }
 
   undo() {
@@ -119,8 +139,46 @@ class Store {
   }
 
   select(selection) {
-    this.selection = selection;
+    const items = Array.isArray(selection) ? selection : selection ? [selection] : [];
+    const unique = new Map();
+    for (const item of items) {
+      if (!item?.type || !item?.id) continue;
+      unique.set(`${item.type}:${item.id}`, { type: item.type, id: item.id });
+    }
+    this.selections = [...unique.values()];
+    this.selection = this.selections[0] || null;
     this.emit('selection');
+  }
+
+  isSelected(type, id) {
+    return this.selections.some((item) => item.type === type && item.id === id);
+  }
+
+  selectAll() {
+    const types = ['segment', 'subtitle', 'audio', 'zoom', 'screen', 'camera', 'mosaic', 'sticker'];
+    this.select(types.flatMap((type) => this.clipPool(type).map((item) => ({ type, id: item.id }))));
+  }
+
+
+  removeSelections() {
+    if (!this.selections.length) return false;
+    const ids = new Map();
+    for (const { type, id } of this.selections) {
+      if (!ids.has(type)) ids.set(type, new Set());
+      ids.get(type).add(id);
+    }
+    this.mutate((draft) => {
+      if (ids.has('segment')) draft.timeline.segments = draft.timeline.segments.filter((item) => !ids.get('segment').has(item.id));
+      if (ids.has('subtitle') && draft.subtitles) draft.subtitles.cues = (draft.subtitles.cues || []).filter((item) => !ids.get('subtitle').has(item.id));
+      if (ids.has('audio')) draft.timeline.audioClips = (draft.timeline.audioClips || []).filter((item) => !ids.get('audio').has(item.id));
+      if (ids.has('zoom')) draft.zoomAnimations = (draft.zoomAnimations || []).filter((item) => !ids.get('zoom').has(item.id));
+      const pools = { screen: 'screenMotionClips', camera: 'cameraMotionClips', mosaic: 'mosaicClips', sticker: 'stickerClips' };
+      for (const [type, key] of Object.entries(pools)) {
+        if (ids.has(type)) draft.timeline[key] = (draft.timeline[key] || []).filter((item) => !ids.get(type).has(item.id));
+      }
+    });
+    this.select(null);
+    return true;
   }
 
   get selectedZoom() {
@@ -134,6 +192,8 @@ class Store {
   get selectedMosaic() { return this.selection && this.selection.type === 'mosaic' ? this.getClip('mosaic', this.selection.id) : null; }
 
   get selectedSticker() { return this.selection && this.selection.type === 'sticker' ? this.getClip('sticker', this.selection.id) : null; }
+
+  get selectedAudioClip() { return this.selection && this.selection.type === 'audio' ? this.getClip('audio', this.selection.id) : null; }
 
   get selectedSegment() {
     return this.selection && this.selection.type === 'segment' ? this.project.timeline.segments.find((segment) => segment.id === this.selection.id) || null : null;

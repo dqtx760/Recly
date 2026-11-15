@@ -19,7 +19,7 @@
     inset: 6px;
     display: flex;
     flex-direction: column;
-    border-radius: 14px;
+    border-radius: 0;
     overflow: hidden;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 12px 32px rgba(0, 0, 0, 0.28);
     background: rgba(26, 26, 28, var(--opacity, 0.92));
@@ -236,6 +236,7 @@
         <span>📝 提词器</span>
       </div>
       <div class="header-actions">
+        <button id="toggle-edit" class="h-btn" title="编辑文稿">✎ 编辑</button>
         <button id="toggle-scroll" class="h-btn" title="播放 / 暂停自动滚动 (快捷键：空格)">▶ 滚屏</button>
         <select id="speed" class="speed-select" title="滚动速度">
           <option value="20">0.8× 慢速</option>
@@ -282,6 +283,7 @@
     const prompterEl = document.getElementById('prompter');
     const opacityEl = document.getElementById('opacity');
     const speedEl = document.getElementById('speed');
+    const editBtn = document.getElementById('toggle-edit');
     const toggleBtn = document.getElementById('toggle-scroll');
     const resetBtn = document.getElementById('reset-scroll');
     const smallerBtn = document.getElementById('smaller');
@@ -293,6 +295,16 @@
     let lastTimestamp = null;
     let resizeEdge = null;
     let resizePointerId = null;
+    let isEditing = typeof memo.text !== 'string' || !memo.text.trim();
+
+    function setEditingMode(editing) {
+      isEditing = Boolean(editing);
+      textEl.readOnly = !isEditing;
+      editBtn.classList.toggle('active', isEditing);
+      editBtn.textContent = isEditing ? '✓ 完成' : '✎ 编辑';
+      editBtn.title = isEditing ? '完成编辑，正文恢复鼠标穿透' : '阅读态：正文鼠标穿透，点击进入编辑';
+      ipcRenderer.send('memo:editing', isEditing);
+    }
 
     document.querySelectorAll('.resize-handle').forEach((handle) => {
       handle.addEventListener('pointerdown', (event) => {
@@ -385,6 +397,11 @@
       save();
     });
 
+    editBtn.addEventListener('click', () => {
+      setEditingMode(!isEditing);
+      if (isEditing) textEl.focus({ preventScroll: true });
+    });
+
     toggleBtn.addEventListener('click', toggleAutoScroll);
 
     resetBtn.addEventListener('click', () => {
@@ -431,6 +448,7 @@
       }
     });
 
+    setEditingMode(isEditing);
     apply();
   </script>
 </body>

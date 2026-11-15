@@ -3,8 +3,8 @@
 
 const path = require('node:path');
 const { ipcRenderer } = require('electron');
-const { element, fileUrl } = require('../common');
-const { PATTERN_PRESETS, CAMERA_SHAPES, CLICK_EFFECTS, ZOOM_EASINGS, clamp } = require('../../core/model');
+const { element, fileUrl, icon } = require('../common');
+const { PATTERN_PRESETS, CAMERA_SHAPES, CLICK_EFFECTS, ZOOM_EASINGS, clamp, uid } = require('../../core/model');
 const { NormalizedCrop, ScreenFrameStyle, FRAME_DEFAULTS } = require('../../core/crop-frame');
 const { MosaicClip, StickerClip } = require('../../core/opening-overlay');
 const timeline = require('../../core/timeline');
@@ -12,12 +12,13 @@ const { planAutoZoom } = require('../../core/zoom');
 const { isInside } = require('../../core/pointer');
 const { renderSubtitlesPanel } = require('./subtitles-panel');
 const { renderAssistantPanel } = require('./assistant-panel');
+const { MusicLibraryPanel } = require('./music-library-panel');
 
 const TABS = [
   { id: 'canvas', label: '画面', icon: 'canvas' },
   { id: 'motion', label: '运镜', icon: 'motion' },
   { id: 'subtitles', label: '字幕', icon: 'memo' },
-  { id: 'other', label: '其他', icon: 'area' },
+  { id: 'other', label: '音频', icon: 'speaker' },
   { id: 'assistant', label: 'AI 助手', icon: 'wand' },
 ];
 
@@ -30,13 +31,23 @@ class Inspector {
     this.onToast = null;
     this.tab = 'canvas';
     this.canvasTab = 'camera';
-    this.otherTab = 'audio';
     this.openingScope = 'project';
     this.motionMode = 'opening';
     this.motionDisclosureOpen = false;
     this.scrollPositions = new Map();
     this.renderedContext = null;
     this.wallpapers = null;
+    this.voiceoverRecorder = null;
+    this.voiceoverStream = null;
+    this.voiceoverState = 'idle';
+    this.musicLibrary = new MusicLibraryPanel({
+      directory: store.directory,
+      addClip: (asset, time) => this.addAudioClip(asset, 'music', time),
+      getTime: () => this.preview.time,
+      pauseTimeline: () => this.preview.pause?.(),
+      onChange: () => this.render(),
+      onToast: (message) => this.onToast?.(message),
+    });
     store.subscribe((reason) => {
       // 拖动滑块时只更新数值显示，不重建控件，否则正在拖的滑块会被换掉。
       if (reason === 'project' && store.gesture) this.refreshValues();
@@ -58,6 +69,8 @@ class Inspector {
           } else if (selection?.type === 'camera' || selection?.type === 'segment') {
             this.tab = 'canvas';
             this.canvasTab = 'camera';
+          } else if (selection?.type === 'audio') {
+            this.tab = 'other';
           }
         }
         this.render();
@@ -70,9 +83,10 @@ class Inspector {
   }
 
   show(tab) {
-    if (tab === 'audio' || tab === 'cursor') {
-      this.otherTab = tab;
-      tab = 'other';
+    if (tab === 'audio') tab = 'other';
+    if (tab === 'cursor') {
+      this.canvasTab = 'cursor';
+      tab = 'canvas';
     }
     if (tab === 'camera') {
       this.canvasTab = 'camera';
@@ -202,8 +216,7 @@ class Inspector {
   cameraShapeCards(get, set, cameraAspect) {
     const options = [
       { id: 'fullscreen', label: '全屏' },
-      ...Object.entries(CAMERA_SHAPES).filter(([id]) => id !== 'square').map(([id, shape]) => ({ id, label: shape.label })),
-      { id: 'square', label: CAMERA_SHAPES.square.label },
+      ...['square', 'vertical', 'horizontal', 'original', 'circle'].map((id) => ({ id, label: CAMERA_SHAPES[id].label })),
     ];
     const selected = get();
     const originalAspect = clamp(Number(cameraAspect) || (16 / 9), 0.55, 1.9);
@@ -330,13 +343,14 @@ class Inspector {
   refreshValues() { for (const refresh of this.refreshers) refresh(); }
 
   render() {
+    if (this.tab !== 'other') this.musicLibrary.deactivate();
     this.refreshers = [];
     const tab = TABS.find((item) => item.id === this.tab) || { label: this.tab === 'overlays' ? '画面效果' : this.tab };
     this.title.textContent = tab.label;
     if (this.assistantControls) this.assistantControls.hidden = this.tab !== 'assistant';
     const context = this.tab === 'canvas' ? `canvas:${this.canvasTab}`
       : this.tab === 'motion' ? `motion:${this.motionMode}${this.motionMode === 'opening' ? `:${this.openingScope}:${this.store.selectedSegment?.id || ''}` : ''}`
-        : this.tab === 'other' ? `other:${this.otherTab}` : this.tab;
+        : this.tab;
     if (this.renderedContext) this.scrollPositions.set(this.renderedContext, this.root.scrollTop);
     const scroll = context === this.renderedContext ? this.root.scrollTop : (this.scrollPositions.get(context) || 0);
     this.root.replaceChildren(...this[`${this.tab}Panel`]());
@@ -352,6 +366,7 @@ class Inspector {
       { id: 'camera', label: '摄像头' },
       { id: 'background', label: '背景' },
       { id: 'layout', label: '布局' },
+      { id: 'cursor', label: '光标' },
     ];
     const selectTab = (id, focus = false) => {
       this.canvasTab = id;
@@ -432,6 +447,10 @@ class Inspector {
 
   cameraCanvasPanel() {
     return this.cameraPanel();
+  }
+
+  cursorCanvasPanel() {
+    return this.cursorPanel();
   }
 
   layoutCanvasPanel() {
@@ -851,20 +870,7 @@ class Inspector {
   }
 
   otherPanel() {
-    const tabs = [
-      { id: 'audio', label: '声音' },
-      { id: 'cursor', label: '光标' },
-    ];
-    const navigation = element('div', { class: 'frame-tabs other-tabs', role: 'tablist', 'aria-label': '其他设置' }, tabs.map((tab) => {
-      const selected = this.otherTab === tab.id;
-      return element('button', {
-        type: 'button', class: selected ? 'active' : '', role: 'tab',
-        'data-other-tab': tab.id, 'aria-selected': String(selected),
-        onclick: () => { this.otherTab = tab.id; this.render(); },
-      }, tab.label);
-    }));
-    const panel = this[`${this.otherTab}Panel`]();
-    return [navigation, ...panel];
+    return this.audioPanel();
   }
 
   cameraPanel() {
@@ -962,54 +968,120 @@ class Inspector {
     return sections;
   }
 
-  audioPanel() {
-    const { project } = this.store;
-    const audio = project.audio;
-    const percent = (value) => `${Math.round(value * 100)}%`;
-    const track = (title, present, mutedKey, volumeKey, missing, maxVolume) => this.section(title, ...(present ? [
-      this.toggle('静音', () => audio[mutedKey], (on) => { audio[mutedKey] = on; }),
-      this.slider('音量', () => audio[volumeKey], (value) => { audio[volumeKey] = value; }, { min: 0, max: maxVolume, step: 0.01, format: percent }),
-    ] : [element('p', { class: 'note' }, missing)]));
-    const sections = [
-      track('麦克风', project.media.microphone, 'isMicrophoneMuted', 'microphoneVolume', '这次录制没有录麦克风。', 4),
-      track('系统声音', project.media.systemAudio, 'isSystemMuted', 'systemVolume', '这次录制没有录系统声音。', 1),
-    ];
-    const segment = this.store.selectedSegment;
-    if (segment) {
-      const effective = (key) => Object.prototype.hasOwnProperty.call(segment.audio || {}, key) ? segment.audio[key] : project.audio[key];
-      const status = (keys) => {
-        const node = element('span', { class: 'note' });
-        const refresh = () => {
-          const current = this.store.selectedSegment?.audio || {};
-          node.textContent = keys.some((key) => Object.prototype.hasOwnProperty.call(current, key)) ? '片段独立' : '继承全局';
-        };
-        this.refreshers.push(refresh);
-        refresh();
-        return node;
-      };
-      const writeOverride = (key, value) => this.store.mutate((draft) => {
-        const target = draft.timeline.segments.find((item) => item.id === segment.id);
-        if (target) target.audio = { ...(target.audio || {}), [key]: value };
-      });
-      sections.push(this.section('选中片段的独立音量',
-        element('p', { class: 'note' }, '只影响当前录屏片段；未覆盖的项目会继续继承全局声音设置。'),
-        project.media.microphone ? element('div', { class: 'audio-override' },
-          element('b', {}, '麦克风'),
-          status(['microphoneVolume', 'isMicrophoneMuted']),
-          this.toggle('静音', () => Boolean(effective('isMicrophoneMuted')), (on) => writeOverride('isMicrophoneMuted', on)),
-          this.slider('音量', () => effective('microphoneVolume'), (value) => writeOverride('microphoneVolume', value), { min: 0, max: 4, step: 0.01, format: percent })) : null,
-        project.media.systemAudio ? element('div', { class: 'audio-override' },
-          element('b', {}, '系统声音'),
-          status(['systemVolume', 'isSystemMuted']),
-          this.toggle('静音', () => Boolean(effective('isSystemMuted')), (on) => writeOverride('isSystemMuted', on)),
-          this.slider('音量', () => effective('systemVolume'), (value) => writeOverride('systemVolume', value), { min: 0, max: 1, step: 0.01, format: percent })) : null,
-        this.button('恢复继承全局设置', () => this.store.mutate((draft) => {
-          const target = draft.timeline.segments.find((item) => item.id === segment.id);
-          if (target) delete target.audio;
-        }))));
-    } else {
-      sections.push(this.section('片段音量', element('p', { class: 'note' }, '在时间线上选中一段录屏后，可单独调整该段麦克风和系统声音。')));
+  addAudioClip(asset, kind, startTime = this.preview.time) {
+    if (!asset) return;
+    const clip = {
+      id: uid(), file: asset.file, name: asset.name || (kind === 'voiceover' ? '配音' : '音乐'), kind,
+      startTime: Math.max(0, Number(startTime) || 0),
+      sourceStart: 0, sourceEnd: asset.duration, sourceDuration: asset.duration, volume: 1,
+    };
+    this.store.mutate((draft) => { draft.timeline.audioClips.push(clip); });
+    this.store.select({ type: 'audio', id: clip.id });
+    this.preview.seek(clip.startTime);
+  }
+
+  async addMusic() {
+    await this.musicLibrary.open();
+  }
+
+  async toggleVoiceoverRecording() {
+    if (this.voiceoverRecorder?.state === 'recording') {
+      this.voiceoverState = 'saving';
+      this.render();
+      try { this.voiceoverRecorder.stop(); } catch (error) {
+        this.voiceoverStream?.getTracks().forEach((track) => track.stop());
+        this.voiceoverStream = null;
+        this.voiceoverRecorder = null;
+        this.voiceoverState = 'idle';
+        this.render();
+        if (this.onToast) this.onToast(error.message || '配音录制失败');
+      }
+      return;
     }
+    if (this.voiceoverState === 'saving') return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      if (this.onToast) this.onToast('当前环境不支持录制配音');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = ['audio/webm;codecs=opus', 'audio/webm'].find((type) => MediaRecorder.isTypeSupported(type));
+      if (!mimeType) throw new Error('当前浏览器没有可用的 WebM 音频编码器');
+      const recorder = new MediaRecorder(stream, { mimeType });
+      const chunks = [];
+      let recordingError = null;
+      const startTime = this.preview.time;
+      this.voiceoverStream = stream;
+      this.voiceoverRecorder = recorder;
+      this.voiceoverState = 'recording';
+      recorder.addEventListener('dataavailable', (event) => { if (event.data?.size) chunks.push(event.data); });
+      recorder.addEventListener('error', (event) => {
+        recordingError = event.error?.message || '配音录制失败';
+      }, { once: true });
+      recorder.addEventListener('stop', async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        this.voiceoverStream = null;
+        this.voiceoverRecorder = null;
+        if (recordingError) {
+          this.voiceoverState = 'idle';
+          this.render();
+          if (this.onToast) this.onToast(recordingError);
+          return;
+        }
+        if (!chunks.length) {
+          this.voiceoverState = 'idle';
+          this.render();
+          if (this.onToast) this.onToast('没有录到配音');
+          return;
+        }
+        try {
+          const blob = new Blob(chunks, { type: mimeType });
+          const data = new Uint8Array(await blob.arrayBuffer());
+          const asset = await ipcRenderer.invoke('project:save-audio-recording', { directory: this.store.directory, data });
+          this.voiceoverState = 'idle';
+          this.addAudioClip(asset, 'voiceover', startTime);
+        } catch (error) {
+          this.voiceoverState = 'idle';
+          this.render();
+          if (this.onToast) this.onToast(error.message || '配音保存失败');
+        }
+      }, { once: true });
+      recorder.start(250);
+      this.render();
+    } catch (error) {
+      this.voiceoverStream?.getTracks().forEach((track) => track.stop());
+      this.voiceoverStream = null;
+      this.voiceoverRecorder = null;
+      this.voiceoverState = 'idle';
+      this.render();
+      if (this.onToast) this.onToast(error.message || '无法访问麦克风');
+    }
+  }
+
+  audioPanel() {
+    if (this.musicLibrary.visible) return [this.musicLibrary.render()];
+    const selectedAudioClip = this.store.selectedAudioClip;
+    const sections = [];
+    if (selectedAudioClip) {
+      const selectedAudioClipId = selectedAudioClip.id;
+      const getAudioClip = () => this.store.getClip('audio', selectedAudioClipId);
+      sections.push(this.section('已选音频',
+        element('p', { class: 'note' }, selectedAudioClip.name || (selectedAudioClip.kind === 'voiceover' ? '配音' : '音乐')),
+        this.slider('音量', () => clamp(Number(getAudioClip()?.volume ?? 1), 0, 1), (value) => {
+          const clip = getAudioClip();
+          if (clip) clip.volume = value;
+        }, {
+          min: 0, max: 1, step: 0.01, format: (value) => `${Math.round(value * 100)}%`,
+        })));
+    }
+    sections.push(this.section('',
+      element('div', { class: 'row audio-actions' },
+        element('button', {
+          class: `btn audio-voiceover ${this.voiceoverState === 'recording' ? 'danger' : 'primary'}`,
+          disabled: this.voiceoverState === 'saving',
+          onclick: () => { void this.toggleVoiceoverRecording(); },
+        }, element('span', { html: icon('mic'), 'aria-hidden': 'true' }), this.voiceoverState === 'recording' ? '结束配音' : this.voiceoverState === 'saving' ? '正在保存…' : '录制配音'),
+        element('button', { class: 'btn audio-music', onclick: () => { void this.addMusic(); } }, element('span', { html: icon('music'), 'aria-hidden': 'true' }), '添加音乐'))));
     return sections;
   }
 

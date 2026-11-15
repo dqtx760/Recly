@@ -19,6 +19,8 @@ const { clipboard } = require('./clipboard');
 const { splitEffectClip } = require('./effect-editing');
 const { rippleTrimSeekTime } = require('./ripple-playhead');
 const { initOverlayInteraction } = require('./overlay-interaction');
+const { attachPreviewFullscreen } = require('./preview-fullscreen');
+const { MaterialsPanel } = require('./materials-panel');
 const $ = (id) => document.getElementById(id);
 const directory = query.get('project');
 
@@ -38,23 +40,27 @@ function toast(message) {
 
 async function main() {
   const project = await ipcRenderer.invoke('project:read', directory);
+  project.previewQuality = 'balanced';
   const store = new Store(directory, project);
   const preview = new Preview(store, $('preview'), $('canvas-wrap'));
   const timelineView = new TimelineView(store, preview, {
-    scroller: $('scroller'), lanes: $('lanes'), ruler: $('ruler'), subtitles: $('lane-subtitles'), subtitleLabel: $('label-subtitles'), screen: $('lane-screen'), zoom: $('lane-zoom'), playhead: $('playhead'), slider: $('timeline-zoom'),
+    scroller: $('scroller'), lanes: $('lanes'), ruler: $('ruler'), subtitles: $('lane-subtitles'), subtitleLabel: $('label-subtitles'), screen: $('lane-screen'), audio: $('lane-audio'), audioLabel: $('label-audio'), zoom: $('lane-zoom'), playhead: $('playhead'), slider: $('timeline-zoom'),
     effects: { screen: $('lane-screen-motion'), camera: $('lane-camera-motion'), mosaic: $('lane-mosaic'), sticker: $('lane-sticker') },
   });
   $('scroller').addEventListener('scroll', () => { $('track-labels').scrollTop = $('scroller').scrollTop; }, { passive: true });
   const inspector = new Inspector(store, preview, $('inspector'), $('inspector-title'));
   inspector.onToast = toast;
+  const materialsPanel = new MaterialsPanel(store, preview, inspector, $('materials-panel'), toast);
   window.reclyEditor = { store, preview, timelineView, inspector };
-  if (typeof preview.setQuality === 'function') preview.setQuality(project.previewQuality || 'balanced');
+  if (typeof preview.setQuality === 'function') preview.setQuality(project.previewQuality || 'full');
 
   // ---- 顶栏
   $('open-library').innerHTML = icon('folder');
   $('undo').innerHTML = icon('undo');
   $('redo').innerHTML = icon('redo');
   $('export').innerHTML = `${icon('export')}导出`;
+  $('materials').innerHTML = `${icon('folder')}素材`;
+  $('materials').addEventListener('click', () => materialsPanel.open());
   $('project-name').value = project.name;
   $('project-name').addEventListener('change', (event) => {
     const name = event.target.value.trim() || project.name;
@@ -66,7 +72,10 @@ async function main() {
   $('open-library').addEventListener('click', () => ipcRenderer.send('recorder:library'));
   $('undo').addEventListener('click', () => store.undo());
   $('redo').addEventListener('click', () => store.redo());
-  $('export').addEventListener('click', () => openExportDialog(store, preview, $('modal')));
+  const openExport = () => store.project.timeline.segments.length
+    ? openExportDialog(store, preview, $('modal'))
+    : toast('时间线上没有可导出的录屏片段');
+  $('export').addEventListener('click', openExport);
   const presetsUI = await initPresetsUI({
     store,
     button: $('scene-preset'),
@@ -85,7 +94,10 @@ async function main() {
   // ---- 右侧分类栏与画布比例
   const railButtons = TABS.map((tab) => element('button', { html: `${icon(tab.icon)}<span>${tab.label}</span>`, onclick: () => showTab(tab.id) }));
   $('rail').append(...railButtons);
-  const updateRailSelection = () => railButtons.forEach((button, index) => button.classList.toggle('active', TABS[index].id === inspector.tab));
+  const updateRailSelection = () => {
+    materialsPanel.close();
+    railButtons.forEach((button, index) => button.classList.toggle('active', TABS[index].id === inspector.tab));
+  };
   inspector.onTabChange = updateRailSelection;
   function showTab(id) {
     inspector.show(id);
@@ -183,6 +195,7 @@ async function main() {
     onPasteSelected: () => pasteSelected(),
     onShowOverlayInspector: () => showTab('overlays'), onToast: toast,
   });
+  attachPreviewFullscreen({ stage: $('stage'), button: $('preview-fullscreen'), onToast: toast });
   inspector.onCopyClip = (kind, clip) => clipboard.copy(clip, kind);
 
   const rippleTrim = (edge) => {
@@ -249,14 +262,6 @@ async function main() {
   $('ripple-start').addEventListener('click', () => rippleTrim('start'));
   $('ripple-end').addEventListener('click', () => rippleTrim('end'));
   $('restore-gap').addEventListener('click', restoreMissingRange);
-  $('quality').addEventListener('click', () => {
-    const quality = (store.project.previewQuality || 'balanced') === 'balanced' ? 'full' : 'balanced';
-    if (typeof preview.setQuality === 'function') preview.setQuality(quality);
-    else return toast('预览质量切换暂不可用');
-    store.mutate((draft) => { draft.previewQuality = quality; });
-    $('quality').textContent = quality === 'balanced' ? '流畅预览' : '原画预览';
-  });
-  $('quality').textContent = (project.previewQuality || 'balanced') === 'balanced' ? '流畅预览' : '原画预览';
   if (timelineView.setDisplayMode) timelineView.setDisplayMode('frames');
   function renderRatio() {
     $('ratio').replaceChildren(...Object.entries(ASPECT_RATIOS).map(([id, item]) => element('button', {
@@ -278,12 +283,19 @@ async function main() {
   $('label-camera-motion').innerHTML = `${icon('camera')}摄像运镜`;
   $('label-mosaic').innerHTML = `${icon('area')}柔化 / 聚光`;
   $('label-sticker').innerHTML = `${icon('canvas')}贴图`;
+  $('label-audio').innerHTML = `${icon('speaker')}音频`;
   $('snap-toggle').innerHTML = icon('magnet');
   $('snap-toggle').classList.toggle('active', timelineView.snapEnabled);
   $('display-mode').textContent = timelineView.displayMode === 'waveform' ? '画面' : '波形';
 
   const split = () => {
     if (store.selection?.type === 'subtitle') return toast('字幕块暂不支持在时间线上分割');
+    if (store.selection?.type === 'audio') {
+      if (!store.splitAudioClip(store.selection.id, preview.time)) {
+        return toast('播放头需位于所选音频片段内，且切点两侧至少保留 0.05 秒');
+      }
+      return null;
+    }
     if (store.selection && ['zoom', 'screen', 'camera', 'mosaic', 'sticker'].includes(store.selection.type)) {
       return splitSelectedEffect();
     }
@@ -293,29 +305,7 @@ async function main() {
     return null;
   };
   const remove = () => {
-    if (store.selection?.type === 'subtitle') {
-      const { id } = store.selection;
-      store.mutate((draft) => {
-        if (draft.subtitles) draft.subtitles.cues = (draft.subtitles.cues || []).filter((cue) => cue.id !== id);
-      });
-      store.select(null);
-    } else if (store.selectedZoom) {
-      const { id } = store.selectedZoom;
-      store.mutate((draft) => { draft.zoomAnimations = draft.zoomAnimations.filter((clip) => clip.id !== id); });
-      store.select(null);
-    } else if (store.selectedSegment) {
-      const next = timeline.removeSegment(store.project.timeline.segments, store.selectedSegment.id);
-      if (!next) return toast('至少要保留一个片段');
-      store.mutate((draft) => { draft.timeline.segments = next; });
-      store.select(null);
-    } else if (store.selection && ['screen', 'camera', 'mosaic', 'sticker'].includes(store.selection.type)) {
-      const { type, id } = store.selection;
-      const pool = { screen: 'screenMotionClips', camera: 'cameraMotionClips', mosaic: 'mosaicClips', sticker: 'stickerClips' }[type];
-      store.mutate((draft) => { draft.timeline[pool] = draft.timeline[pool].filter((clip) => clip.id !== id); });
-      store.select(null);
-    } else {
-      toast('先在时间线上点选一个片段或效果');
-    }
+    if (!store.removeSelections()) toast('先在时间线上点选或框选素材');
     return null;
   };
   const addZoom = () => {
@@ -325,7 +315,8 @@ async function main() {
   };
   const chooseSpeed = async () => {
     if (store.selection?.type === 'subtitle') return toast('请先选择一个录屏片段');
-    const segment = store.selectedSegment || timeline.locate(store.project.timeline.segments, preview.time).segment;
+    const segment = store.selectedSegment || timeline.locate(store.project.timeline.segments, preview.time)?.segment;
+    if (!segment) return toast('时间线上没有可调整速度的录屏片段');
     const chosen = await ipcRenderer.invoke('recorder:menu', timeline.SPEEDS.map((speed) => ({ id: String(speed), label: `${speed}×`, checked: Math.abs(segment.speed - speed) < 1e-6 })));
     if (!chosen) return;
     // 变速后保持播放头停在同一处素材上。
@@ -353,8 +344,9 @@ async function main() {
   $('add-zoom').innerHTML = `${icon('plus')}缩放`;
   $('previous').addEventListener('click', () => jump(-1));
   $('next').addEventListener('click', () => jump(1));
-  $('play').addEventListener('click', () => preview.toggle());
-  $('zoom-out').addEventListener('click', () => timelineView.setZoom(Math.max(timelineView.zoomLevel - 0.1, 0)));
+  const togglePlayback = () => store.project.timeline.segments.length ? preview.toggle() : toast('时间线上没有可播放的录屏片段');
+  $('play').addEventListener('click', togglePlayback);
+  $('zoom-out').addEventListener('click', () => timelineView.setZoom(Math.max(timelineView.zoomLevel - 0.1, -1)));
   $('zoom-in').addEventListener('click', () => timelineView.setZoom(Math.min(timelineView.zoomLevel + 0.1, 1)));
 
   const supportedClipTypes = new Set(['zoom', 'screen', 'camera', 'mosaic', 'sticker']);
@@ -401,12 +393,14 @@ async function main() {
 
   // ---- 状态同步
   const refreshChrome = () => {
-    const segment = store.selectedSegment || timeline.locate(store.project.timeline.segments, preview.time).segment;
-    $('speed').innerHTML = `${icon('speed')}${segment.speed}×`;
+    const segment = store.selectedSegment || timeline.locate(store.project.timeline.segments, preview.time)?.segment || null;
+    $('speed').innerHTML = `${icon('speed')}${segment ? `${segment.speed}×` : '速度'}`;
+    $('speed').disabled = !segment;
+    $('play').disabled = !segment;
+    $('export').disabled = !segment;
     $('undo').disabled = !store.undoStack.length;
     $('redo').disabled = !store.redoStack.length;
     $('clock-total').textContent = formatTime(timeline.outputDuration(store.project.timeline.segments));
-    $('quality').textContent = (store.project.previewQuality || 'balanced') === 'balanced' ? '流畅预览' : '原画预览';
     $('save-state').textContent = { saved: '已保存', pending: '正在保存…', failed: '保存失败，请检查磁盘空间或权限' }[store.saveState];
     $('save-state').style.color = store.saveState === 'failed' ? 'var(--danger)' : '';
     renderRatio();
@@ -439,12 +433,13 @@ async function main() {
     const handlers = [
       [control && key === 'z' && !event.shiftKey, () => store.undo()],
       [control && ((key === 'z' && event.shiftKey) || key === 'y'), () => store.redo()],
+      [control && key === 'a', () => store.selectAll()],
       [control && key === 'c', copySelected],
       [control && key === 'v' && event.shiftKey, pasteSelectedAttributes],
       [control && key === 'v' && !event.shiftKey, pasteSelected],
-      [control && key === 'e', () => openExportDialog(store, preview, $('modal'))],
+      [control && key === 'e', openExport],
       [control && key === 'b', split],
-      [!control && key === ' ', () => preview.toggle()],
+      [!control && key === ' ', togglePlayback],
       [!control && key === 's', split],
       [!control && key === 'q', () => rippleTrim('start')],
       [!control && key === 'w', () => rippleTrim('end')],

@@ -175,6 +175,9 @@ function autoHideTaskbar() {
  * @returns {boolean} 操作是否成功
  */
 function restoreTaskbar() {
+  // 录制不再修改 Windows 任务栏状态；无隐藏记录时避免清理逻辑改动用户设置。
+  if (savedTaskbarState === null && !isAutoHideApplied) return false;
+
   const bridge = getNativeBridge();
   if (!bridge) {
     savedTaskbarState = null;

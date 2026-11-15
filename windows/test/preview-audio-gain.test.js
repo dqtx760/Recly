@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 global.location = { search: '' };
 const { Preview } = require('../src/renderer/editor/preview');
+const makePreviewFixture = () => Object.assign(Object.create(Preview.prototype), { timelineAudio: new Map() });
 
 let sourceCount = 0;
 let gainCount = 0;
@@ -55,7 +56,7 @@ const mediaElement = {
   play() { this.paused = false; return Promise.resolve(); },
   pause() { this.paused = true; },
 };
-const preview = Object.create(Preview.prototype);
+const preview = makePreviewFixture();
 preview.microphone = { node: mediaElement, offset: 0, duration: 10 };
 preview.status = '';
 preview.audioGainError = null;
@@ -70,7 +71,7 @@ assert.equal(mediaElement.volume, 1, 'Web Audio 路径将元素音量固定为 1
 assert.equal(preview.microphoneSource.connections[0], preview.microphoneGain);
 assert.equal(preview.microphoneGain.connections[0], preview.audioContext.destination);
 
-const mutedPreview = Object.create(Preview.prototype);
+const mutedPreview = makePreviewFixture();
 mutedPreview.microphone = { node: { volume: 1 } };
 mutedPreview.status = '';
 mutedPreview.audioGainError = null;
@@ -99,7 +100,7 @@ class BrokenGainConnectContext extends MockAudioContext {
   }
 }
 global.AudioContext = BrokenGainConnectContext;
-const fallbackPreview = Object.create(Preview.prototype);
+const fallbackPreview = makePreviewFixture();
 fallbackPreview.microphone = { node: { volume: 0.7 } };
 fallbackPreview.status = '';
 fallbackPreview.audioGainError = null;
@@ -119,7 +120,7 @@ class BrokenCreateGainContext extends MockAudioContext {
   createGain() { throw new Error('injected createGain failure'); }
 }
 global.AudioContext = BrokenCreateGainContext;
-const createGainFallback = Object.create(Preview.prototype);
+const createGainFallback = makePreviewFixture();
 createGainFallback.microphone = { node: { volume: 1 } };
 createGainFallback.status = '';
 createGainFallback.audioGainError = null;
@@ -129,7 +130,7 @@ assert.deepEqual(createGainFallback.microphoneSource.connections, [createGainFal
 global.AudioContext = MockAudioContext;
 const sourceCountAfterPreviewSetup = sourceCount;
 
-const liveGainPreview = Object.create(Preview.prototype);
+const liveGainPreview = makePreviewFixture();
 liveGainPreview.microphone = { node: { volume: 1 } };
 liveGainPreview.microphoneGain = { gain: {
   value: 4,
@@ -186,6 +187,30 @@ preview.syncMedia(true);
 assert.equal(preview.microphoneGain.gain.value, 0.42, '解除静音后恢复片段保存的增益');
 assert.equal(sourceCount, sourceCountAfterPreviewSetup, '改变音量、静音和片段后仍复用原 MediaElementSource');
 
+const previousDocument = global.document;
+const timelineAudioNode = {
+  currentTime: 0, paused: true, seeking: false, playbackRate: 1, volume: 1,
+  addEventListener() {}, play() { this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; },
+};
+global.document = { createElement: (tag) => {
+  assert.equal(tag, 'audio');
+  return timelineAudioNode;
+} };
+const timelineAudioPreview = makePreviewFixture();
+timelineAudioPreview.store = { directory: 'D:/test-project', project: { timeline: {
+  audioClips: [{ id: 'music', file: 'media/music.mp3', startTime: 0, sourceStart: 0, sourceEnd: 10, volume: 0.37 }],
+  segments: [{ sourceStart: 0, sourceEnd: 10, speed: 1 }],
+} } };
+timelineAudioPreview.time = 2;
+timelineAudioPreview.playing = false;
+timelineAudioPreview.syncTimelineAudio(true);
+assert.equal(timelineAudioNode.volume, 0.37, '时间线音乐预览应用片段音量');
+timelineAudioPreview.store.project.timeline.audioClips[0].volume = 0.12;
+timelineAudioPreview.syncTimelineAudio(false);
+assert.equal(timelineAudioNode.volume, 0.12, '拖动音量后预览应用新值');
+if (previousDocument === undefined) delete global.document;
+else global.document = previousDocument;
+
 let editAudioTime = 4.7;
 const editAudioNode = {
   duration: 10,
@@ -210,7 +235,7 @@ const editScreenNode = {
   play() { this.paused = false; return Promise.resolve(); },
   pause() { this.paused = true; },
 };
-const volumeEditPreview = Object.create(Preview.prototype);
+const volumeEditPreview = makePreviewFixture();
 volumeEditPreview.store = { project: {
   timeline: { segments: [{ sourceStart: 0, sourceEnd: 10, speed: 1 }] },
   audio: { microphoneVolume: 0.42, systemVolume: 1, isMicrophoneMuted: false, isSystemMuted: false },
@@ -243,7 +268,7 @@ assert.equal(resumeCount, resumeCountBeforeMainPlayback + 1, '播放入口恢复
 
 delete global.AudioContext;
 const unsupportedElement = { volume: 1 };
-const unsupported = Object.create(Preview.prototype);
+const unsupported = makePreviewFixture();
 unsupported.microphone = { node: unsupportedElement };
 unsupported.audioGainError = null;
 unsupported.status = '';
@@ -256,4 +281,4 @@ assert.match(statuses.at(-1), /无法应用麦克风放大/);
 if (previousAudioContext === undefined) delete global.AudioContext;
 else global.AudioContext = previousAudioContext;
 
-console.log('Preview microphone gain regression passed: one source, clip inheritance, mute, 400%, resume, and explicit unsupported error.');
+console.log('Preview audio gain regression passed: microphone gain and timeline music volume.');

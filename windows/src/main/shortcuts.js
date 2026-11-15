@@ -9,8 +9,6 @@ const path = require('node:path');
 const DEFAULT_SHORTCUTS = Object.freeze({
   recordToggle: 'Control+Alt+R',
   recordPause: 'Control+Alt+P',
-  recordMarker: 'Control+Alt+M',
-  recordDiscard: 'Control+Alt+D',
   play: 'Space',
   split: 'S',
   delete: 'Delete',
@@ -227,7 +225,7 @@ function loadShortcuts() {
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const merged = { ...DEFAULT_SHORTCUTS };
         for (const [key, val] of Object.entries(parsed)) {
-          if (typeof val === 'string') {
+          if (Object.hasOwn(DEFAULT_SHORTCUTS, key) && typeof val === 'string') {
             const parsedAcc = parseAccelerator(val);
             if (parsedAcc.valid) {
               merged[key] = parsedAcc.normalized;

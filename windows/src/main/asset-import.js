@@ -38,4 +38,35 @@ async function importAsset({ directory, kind, file, image }, media, nativeImage)
   return { file: relative, index, width: info.video.width, height: info.video.height, duration: info.duration };
 }
 
-module.exports = { importAsset, readClipboardImage };
+async function importAudio({ directory, file, buffer, name }, media) {
+  if (!fs.existsSync(path.join(directory, 'project.json'))) throw new Error('项目目录不存在');
+  const extension = buffer ? '.webm' : path.extname(file || '').toLowerCase();
+  if (!['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.webm', '.flac', '.mp4'].includes(extension)) {
+    throw new Error('不支持这种音频格式');
+  }
+  const id = randomUUID();
+  const sourceRelative = `media/audio-source-${id}${extension}`;
+  const outputRelative = `media/audio-${id}.m4a`;
+  const source = path.join(directory, sourceRelative);
+  const output = path.join(directory, outputRelative);
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  try {
+    if (buffer) fs.writeFileSync(source, buffer);
+    else fs.copyFileSync(file, source);
+    const info = await media.finalizeAudio(source, output);
+    if (!info?.hasAudio || !Number.isFinite(info.duration) || info.duration <= 0) throw new Error('文件中没有可用的音频');
+    return {
+      file: outputRelative,
+      duration: info.duration,
+      name: String(name || path.basename(file || '配音', extension)).slice(0, 160),
+    };
+  } catch (error) {
+    try { fs.unlinkSync(source); } catch { /* 源临时文件不存在 */ }
+    try { fs.unlinkSync(output); } catch { /* 输出文件不存在 */ }
+    throw error;
+  } finally {
+    try { fs.unlinkSync(source); } catch { /* 转换已清理或失败 */ }
+  }
+}
+
+module.exports = { importAsset, importAudio, readClipboardImage };

@@ -3,6 +3,7 @@
 // 画面由与导出相同的 Compositor 绘制。
 
 const path = require('node:path');
+const fs = require('node:fs');
 const { ipcRenderer } = require('electron');
 const { fileUrl } = require('../common');
 const { canvasDimensions, clamp } = require('../../core/model');
@@ -52,20 +53,33 @@ class Preview {
     this.onStatus = () => {};
     this.status = '';
     this.audioGainError = null;
-    this.preparingProxy = Boolean(media.screen && (media.screen.width > 1280 || media.screen.frameRate > 20) && ipcRenderer?.invoke);
-    this.quality = store.project.previewQuality === 'full' ? 'full' : 'balanced';
-    this.readyProxyFile = null;
-    this.proxyFile = null;
+    const originalScreenFile = media.screen?.file ? path.join(store.directory, media.screen.file) : null;
+    const previewCandidate = media.screen?.preview ? path.join(store.directory, media.screen.preview) : null;
+    let existingProxy = null;
+    if (originalScreenFile && previewCandidate) {
+      try {
+        const original = fs.statSync(originalScreenFile);
+        const preview = fs.statSync(previewCandidate);
+        if (preview.size > 1024 && preview.mtimeMs >= original.mtimeMs) existingProxy = previewCandidate;
+      } catch {
+        // 代理缺失或已失效时重新生成，不让编辑器先加载旧文件。
+      }
+    }
+    this.preparingProxy = Boolean(media.screen && (media.screen.width > 1280 || media.screen.frameRate > 20)
+      && ipcRenderer?.invoke && !existingProxy);
+    this.quality = store.project.previewQuality === 'balanced' ? 'balanced' : 'full';
+    this.readyProxyFile = existingProxy;
+    this.proxyFile = existingProxy;
     this.assetRequest = 0;
     this.assetsPending = true;
     this.assetError = null;
     this.resumeAfterVisibility = false;
     if (this.preparingProxy) this.status = '正在准备流畅预览…';
 
-    const make = (tag, track, muted) => {
+    const make = (tag, track, muted, sourceOverride = null) => {
       if (!track) return null;
       const node = document.createElement(tag);
-      node.src = fileUrl(path.join(store.directory, track.file));
+      node.src = fileUrl(sourceOverride || path.join(store.directory, track.file));
       node.preload = 'auto';
       node.muted = muted;
       node.addEventListener('seeked', () => {
@@ -87,16 +101,17 @@ class Preview {
       });
       return { node, offset: track.offset || 0, duration: track.duration };
     };
-    this.screen = make('video', media.screen, true);
+    this.screen = make('video', media.screen, true, this.quality === 'balanced' && existingProxy ? existingProxy : null);
     // 画布画的是已经呈现到屏幕上的那一帧，而不是解码器时钟的前沿。
     // 音频跟随呈现帧的时间才能和观众看到的画面同步。
     this.screenFrame = { mediaTime: null, presentedAt: 0 };
     this.watchScreenFrame();
-    this.originalScreenUrl = this.screen?.node.src || null;
-    this.activeScreenUrl = this.originalScreenUrl;
+    this.originalScreenUrl = originalScreenFile ? fileUrl(originalScreenFile) : null;
+    this.activeScreenUrl = this.screen?.node.src || this.originalScreenUrl;
     this.camera = make('video', media.camera, true);
     this.microphone = make('audio', media.microphone, false);
     this.system = make('audio', media.systemAudio, false);
+    this.timelineAudio = new Map();
     this.setupMicrophoneAudio();
     this.backgroundVideo = null;
     this.setupBackgroundVideo();
@@ -119,6 +134,7 @@ class Preview {
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.visibilityChange);
     requestAnimationFrame((now) => this.frame(now));
     if (this.preparingProxy) this.prepareProxy();
+    else if (this.readyProxyFile && this.quality === 'balanced') this.applyReadyProxy();
   }
 
   async prepareProxy() {
@@ -127,6 +143,7 @@ class Preview {
       if (file) {
         this.proxyFile = file;
         this.readyProxyFile = file;
+        this.store.project.media.screen.preview = path.relative(this.store.directory, file).replaceAll(path.sep, '/');
         if (this.quality === 'balanced') this.applyReadyProxy();
       }
       this.status = this.assetError?.message || '';
@@ -231,7 +248,7 @@ class Preview {
 
   get duration() { return timeline.outputDuration(this.segments); }
 
-  get sourceTime() { return timeline.locate(this.segments, this.time).sourceTime; }
+  get sourceTime() { return timeline.locate(this.segments, this.time)?.sourceTime ?? 0; }
 
   transportSignature() {
     const hit = timeline.locate(this.segments, this.time);
@@ -253,13 +270,14 @@ class Preview {
   onStoreChange(reason) {
     if (reason === 'project') {
       this.time = clamp(this.time, 0, this.duration);
+      if (this.duration <= 0 && this.playing) this.pause();
       const nextTransportSignature = this.transportSignature();
       const previousTransportSignature = this.lastTransportSignature;
       const transportChanged = !previousTransportSignature
         || previousTransportSignature.length !== nextTransportSignature.length
         || nextTransportSignature.some((value, index) => value !== previousTransportSignature[index]);
       this.lastTransportSignature = nextTransportSignature;
-      const quality = this.store.project.previewQuality === 'full' ? 'full' : 'balanced';
+      const quality = this.store.project.previewQuality === 'balanced' ? 'balanced' : 'full';
       if (quality !== this.quality) {
         this.quality = quality;
         this.switchScreenSource(quality === 'full'
@@ -306,7 +324,7 @@ class Preview {
   }
 
   play() {
-    if (this.playing) return;
+    if (this.playing || this.duration <= 0) return;
     if (this.time >= this.duration - 0.02) this.time = 0;
     if (this.audioContext?.state === 'suspended') this.audioContext.resume().catch(() => {});
     this.playing = true;
@@ -550,13 +568,80 @@ class Preview {
     if (!node.seeking && node.paused) node.play().catch(() => {});
   }
 
+  syncTimelineAudio(force, speed = 1, waiting = false) {
+    const clips = this.store.project.timeline.audioClips || [];
+    const activeIds = new Set();
+    for (const clip of clips) {
+      if (!clip.file) continue;
+      activeIds.add(clip.id);
+      let track = this.timelineAudio.get(clip.id);
+      const file = path.isAbsolute(clip.file) ? clip.file : path.join(this.store.directory, clip.file);
+      if (!track || track.file !== file) {
+        if (track) track.node.pause();
+        const node = document.createElement('audio');
+        node.src = fileUrl(file);
+        node.preload = 'auto';
+        track = { node, file, inRange: false };
+        node.addEventListener('loadedmetadata', () => this.syncMedia(true));
+        node.addEventListener('seeked', () => {
+          const hit = timeline.locate(this.segments, this.time);
+          this.syncTimelineAudio(false, hit?.segment.speed || 1, this.visualWaitHeld);
+        });
+        this.timelineAudio.set(clip.id, track);
+      }
+      const { node } = track;
+      const start = Math.max(0, Number(clip.startTime) || 0);
+      const sourceStart = Math.max(0, Number(clip.sourceStart) || 0);
+      const sourceEnd = Math.max(sourceStart, Number(clip.sourceEnd) || sourceStart);
+      const duration = sourceEnd - sourceStart;
+      const wasInRange = track.inRange;
+      const inRange = duration > 0 && this.time >= start - 0.01 && this.time < start + duration;
+      const wanted = clamp(sourceStart + this.time - start, sourceStart, sourceEnd);
+      node.volume = clamp(Number(clip.volume ?? 1), 0, 1);
+      if (!inRange) {
+        if (!node.paused) node.pause();
+        if (!this.playing && force && Math.abs(node.currentTime - sourceStart) > 0.02) {
+          try { node.currentTime = sourceStart; } catch { /* 等待媒体元数据 */ }
+        }
+      } else if (this.playing && !waiting) {
+        if (node.playbackRate !== speed) node.playbackRate = speed;
+        const drift = Math.abs(node.currentTime - wanted);
+        if (!node.seeking && (force || !wasInRange) && drift > 0.025) {
+          if (!node.paused) node.pause();
+          try { node.currentTime = wanted; } catch { /* 等待媒体元数据 */ }
+        } else if (!node.seeking && drift > 0.18) {
+          if (!node.paused) node.pause();
+          try { node.currentTime = wanted; } catch { /* 等待媒体元数据 */ }
+        }
+        if (node.paused && !node.seeking) node.play().catch(() => {});
+      } else {
+        if (!node.paused) node.pause();
+        if (!node.seeking && Math.abs(node.currentTime - wanted) > 0.02) {
+          try { node.currentTime = wanted; } catch { /* 等待媒体元数据 */ }
+        }
+      }
+      track.inRange = inRange;
+    }
+    for (const [id, track] of this.timelineAudio) {
+      if (activeIds.has(id)) continue;
+      track.node.pause();
+      this.timelineAudio.delete(id);
+    }
+  }
+
   syncMedia(force) {
     if (this.cameraSeekHoldsScreen && !this.cameraWaiting()) this.cameraSeekHoldsScreen = false;
     const now = performance.now();
     const wasVisualWaiting = Boolean(this.visualWaitHeld);
     const hit = timeline.locate(this.segments, this.time);
     if (!hit) {
+      this.playing = false;
+      this.time = 0;
+      for (const track of [this.screen, this.camera, this.microphone, this.system]) {
+        if (track) { track.node.pause(); track.inRange = false; }
+      }
       this.visualWaitHeld = false;
+      this.syncTimelineAudio(force, 1, true);
       this.syncBackgroundMedia(force);
       this.lastTransportSignature = this.transportSignature();
       return;
@@ -663,6 +748,7 @@ class Preview {
       }
     }
     this.visualWaitHeld = visualWaiting;
+    this.syncTimelineAudio(force, hit.segment.speed, visualWaiting);
     this.syncBackgroundMedia(force);
     this.lastTransportSignature = this.transportSignature();
   }
@@ -711,6 +797,12 @@ class Preview {
   }
 
   draw() {
+    if (!this.segments.length) {
+      this.ctx.fillStyle = '#111';
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      this.scene = null;
+      return;
+    }
     if (this.assetsPending || this.assetError) return;
     if (this.screen && this.screen.node.readyState < 2) return;
     const { project, zoomClips, pointerTrack } = this.store;

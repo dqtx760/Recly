@@ -6,6 +6,16 @@ const { element } = require('../common');
 const { uid } = require('../../core/model');
 const { normalizeSubtitleLanguage, normalizeSubtitles, mapCuesToOutput, toSrt } = require('../../core/subtitles');
 const timeline = require('../../core/timeline');
+const { patchSubtitles } = require('./agent-bridge');
+const {
+  TRANSLATION_LANGUAGES,
+  availableAssistantBackends,
+  getTranslationTargets,
+  cuesHiddenAfterTranslation,
+  validateTranslationResult,
+  makeSubtitlePatch,
+  translationMessage,
+} = require('./subtitle-translation');
 
 function ensureStylesheet() {
   if (document.getElementById('subtitles-panel-styles')) return;
@@ -36,7 +46,32 @@ function panelState(inspector) {
       tab: 'subtitles',
       query: '',
       replacement: '',
+      translationLanguage: 'en',
+      translationMode: 'replace',
+      translationScope: 'all',
+      translationBackend: '',
+      translationBackendChoices: [],
+      translationDetectionStarted: false,
+      translationDetecting: false,
+      translationDetectionError: '',
+      translationApiConfigured: false,
+      translationApiChecking: false,
+      translationApiError: '',
+      translationRequest: null,
+      translationStatus: '',
+      translationError: false,
     };
+  } else {
+    const defaults = {
+      translationLanguage: 'en', translationMode: 'replace', translationScope: 'all',
+      translationBackend: '', translationBackendChoices: [], translationDetectionStarted: false,
+      translationDetecting: false, translationDetectionError: '', translationApiConfigured: false,
+      translationApiChecking: false, translationApiError: '', translationRequest: null,
+      translationStatus: '', translationError: false,
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      if (!(key in inspector.subtitlesState)) inspector.subtitlesState[key] = value;
+    }
   }
   return inspector.subtitlesState;
 }
@@ -135,6 +170,197 @@ function numberInput(value, { min = 0, max, step = 0.01, label } = {}) {
   });
 }
 
+function appendTranslationSection(panel, inspector, project, subtitles, state, note, button, field) {
+  const { store } = inspector;
+  const isVisible = () => inspector.tab === 'subtitles' && state.tab === 'translation';
+  const renderIfVisible = () => { if (isVisible()) inspector.render(); };
+  const selectedCue = store.selection?.type === 'subtitle'
+    ? subtitles.cues.find((cue) => cue.id === store.selection.id)
+    : null;
+  let targets = [];
+  let targetError = '';
+  try { targets = getTranslationTargets(project, state.translationScope, selectedCue?.id || null); }
+  catch (error) { targetError = error.message || String(error); }
+  let cutCueIds = [];
+  if (!targetError) {
+    try { cutCueIds = cuesHiddenAfterTranslation(project, targets); }
+    catch (error) { targetError = error.message || String(error); }
+  }
+
+  const detectBackends = async () => {
+    if (state.translationDetecting) return;
+    state.translationDetectionStarted = true;
+    state.translationDetecting = true;
+    state.translationDetectionError = '';
+    renderIfVisible();
+    try {
+      const choices = availableAssistantBackends(await ipcRenderer.invoke('assistant:detect'));
+      state.translationBackendChoices = choices;
+      if (!choices.some((item) => item.id === state.translationBackend)) state.translationBackend = choices[0]?.id || '';
+      if (!choices.length) throw new Error('没有可用的 AI 后端。');
+      if (state.translationBackend === 'api') await checkApiConfiguration();
+    } catch (error) {
+      state.translationDetectionError = error.message || String(error);
+    } finally {
+      state.translationDetecting = false;
+      renderIfVisible();
+    }
+  };
+
+  const checkApiConfiguration = async () => {
+    if (state.translationApiChecking) return;
+    state.translationApiChecking = true;
+    state.translationApiError = '';
+    renderIfVisible();
+    try {
+      const config = await ipcRenderer.invoke('assistant:api-config');
+      state.translationApiConfigured = Boolean(config?.hasKey && config?.baseUrl && config?.model);
+    } catch (error) {
+      state.translationApiConfigured = false;
+      state.translationApiError = error.message || '无法读取 AI API 配置。';
+    } finally {
+      state.translationApiChecking = false;
+      renderIfVisible();
+    }
+  };
+
+  if (!state.translationDetectionStarted && state.tab === 'translation') void detectBackends();
+
+  const language = element('select', { 'aria-label': '目标语言', disabled: Boolean(state.translationRequest) },
+    TRANSLATION_LANGUAGES.map(({ id, label }) => element('option', { value: id }, label)));
+  language.value = state.translationLanguage;
+  language.addEventListener('change', () => { state.translationLanguage = language.value; });
+
+  const mode = element('select', { 'aria-label': '翻译后字幕处理', disabled: Boolean(state.translationRequest) },
+    element('option', { value: 'replace' }, '译文替换原文'),
+    element('option', { value: 'bilingual' }, '保留原文，译文在下方'));
+  mode.value = state.translationMode;
+  mode.addEventListener('change', () => { state.translationMode = mode.value; });
+
+  const scope = element('select', { 'aria-label': '翻译范围', disabled: Boolean(state.translationRequest) },
+    element('option', { value: 'all' }, '全部字幕'),
+    element('option', { value: 'selected', disabled: !selectedCue }, '当前选中字幕'));
+  scope.value = state.translationScope;
+  scope.addEventListener('change', () => { state.translationScope = scope.value; inspector.render(); });
+
+  const backends = element('select', { 'aria-label': '翻译 AI 后端', disabled: Boolean(state.translationRequest || state.translationDetecting || !state.translationBackendChoices.length) },
+    state.translationBackendChoices.map(({ id, label }) => element('option', { value: id }, label)));
+  backends.value = state.translationBackend;
+  backends.addEventListener('change', () => {
+    state.translationBackend = backends.value;
+    state.translationApiConfigured = false;
+    state.translationApiError = '';
+    if (state.translationBackend === 'api') void checkApiConfiguration();
+    else inspector.render();
+  });
+
+  const refreshButton = button(state.translationDetecting ? '正在检测…' : '重新检测 AI', () => {
+    state.translationDetectionStarted = false;
+    void detectBackends();
+  }, 'ghost');
+  refreshButton.disabled = Boolean(state.translationRequest || state.translationDetecting);
+  const apiStatus = state.translationBackend === 'api'
+    ? state.translationApiChecking
+      ? note('正在检查共用的 API 配置…')
+      : state.translationApiError
+        ? note(state.translationApiError, 'error')
+        : state.translationApiConfigured
+          ? note('已使用底部 AI 助手中保存的 API 配置。')
+          : element('div', { class: 'subtitle-translation-api' },
+            note('API 尚未配置，请从底部 AI 入口设置；这里不会另存一份密钥。', 'error'),
+            button('打开 AI 助手设置', () => inspector.show('assistant'), 'ghost'))
+    : null;
+
+  const targetStatus = targetError
+    ? note(targetError, 'error')
+    : cutCueIds.length
+      ? note(`字幕 ${cutCueIds.join('、')} 会跨越切剪边界，翻译后原词时间无法对应，当前映射会隐藏它们。请先拆分这些字幕或调整起止时间。`, 'error')
+      : note('保留字幕时间，每次最多翻译 50 条。');
+  const translationStatus = state.translationStatus
+    ? element('p', { class: `subtitles-note${state.translationError ? ' error' : ''}`, role: state.translationError ? 'alert' : 'status', 'aria-live': 'polite' }, state.translationStatus)
+    : null;
+  const translate = button(state.translationRequest ? '正在翻译…' : '翻译字幕', () => { void runTranslation(); }, 'primary');
+  translate.disabled = Boolean(state.translationRequest || state.translationDetecting || state.translationApiChecking
+    || !state.translationBackend || (state.translationBackend === 'api' && !state.translationApiConfigured)
+    || targetError || cutCueIds.length);
+  const stop = state.translationRequest && !state.translationRequest.stopRequested
+    ? button('停止等待', () => {
+      state.translationRequest.stopRequested = true;
+      state.translationStatus = '已停止等待；AI 请求可能仍会完成，返回结果会被丢弃。为避免取消同一窗口的其它 AI 请求，这里不会调用全局取消接口。';
+      state.translationError = false;
+      inspector.render();
+    }, 'ghost')
+    : null;
+
+  async function runTranslation() {
+    if (state.translationRequest || translate.disabled) return;
+    const request = { stopRequested: false };
+    state.translationRequest = request;
+    state.translationError = false;
+    state.translationStatus = '正在翻译所选字幕…';
+    const revision = store.revision;
+    const requestTargets = targets.map((cue) => ({ id: cue.id, text: cue.text, start: cue.start, end: cue.end }));
+    const backend = state.translationBackend;
+    const modeValue = state.translationMode;
+    const languageValue = state.translationLanguage;
+    const languageLabel = TRANSLATION_LANGUAGES.find((item) => item.id === languageValue)?.label;
+    inspector.render();
+    try {
+      if (!languageLabel) throw new Error('请选择有效的目标语言。');
+      if (store.gesture || window.reclyEditor?.agentBridge?.activeExportId) throw new Error('请完成当前拖动或导出后再翻译字幕。');
+      const message = translationMessage(languageValue, languageLabel, requestTargets);
+      const result = await ipcRenderer.invoke('assistant:send', {
+        directory: store.directory,
+        backend,
+        message,
+        history: [],
+        project: JSON.parse(JSON.stringify(project)),
+        playhead: inspector.preview.time,
+        selection: store.selection,
+      });
+      if (request.stopRequested) return;
+      if (store.revision !== revision) throw new Error('等待翻译期间工程已改变，本次未应用，请根据当前字幕重新翻译。');
+      if (store.gesture || window.reclyEditor?.agentBridge?.activeExportId) throw new Error('请完成当前拖动或导出后再应用翻译结果。');
+      const translated = validateTranslationResult(result, requestTargets);
+      const patch = makeSubtitlePatch(requestTargets, translated, modeValue);
+      const nextProject = JSON.parse(JSON.stringify(store.project));
+      patchSubtitles(nextProject, patch);
+      const nextCues = new Map(nextProject.subtitles.cues.map((cue) => [cue.id, cue]));
+      for (const cue of requestTargets) {
+        const updated = nextCues.get(cue.id);
+        if (!updated || updated.start !== cue.start || updated.end !== cue.end) throw new Error(`字幕 ${cue.id} 的起止时间发生变化，本次未应用。`);
+      }
+      store.mutate((draft) => { draft.subtitles = nextProject.subtitles; });
+      state.translationStatus = `已翻译 ${patch.cues.length} 条字幕，可撤销恢复。`;
+      state.translationError = false;
+    } catch (error) {
+      if (!request.stopRequested) {
+        state.translationStatus = error.message || String(error);
+        state.translationError = true;
+      }
+    } finally {
+      if (state.translationRequest === request) state.translationRequest = null;
+      if (request.stopRequested && !state.translationStatus.startsWith('已停止等待')) {
+        state.translationStatus = '已停止等待，返回结果已丢弃。';
+        state.translationError = false;
+      }
+      renderIfVisible();
+    }
+  }
+
+  panel.append(element('section', { class: 'subtitles-section subtitle-translation', hidden: state.tab !== 'translation' },
+    element('h4', {}, '翻译字幕'),
+    field('目标语言', language),
+    field('翻译范围', scope),
+    field('翻译结果', mode),
+    field('AI 后端', backends),
+    element('div', { class: 'subtitles-actions' }, translate, stop, refreshButton),
+    state.translationDetectionError ? note(state.translationDetectionError, 'error') : null,
+    apiStatus,
+    targetStatus,
+    translationStatus));
+}
+
 function renderSubtitlesPanel(inspector) {
   ensureStylesheet();
   const { store } = inspector;
@@ -178,10 +404,12 @@ function renderSubtitlesPanel(inspector) {
     onclick: () => write((value) => { value.enabled = !value.enabled; }),
   }, subtitles.enabled ? '已启用' : '已关闭');
   panel.append(element('nav', { class: 'subtitles-tabs frame-tabs', 'aria-label': '字幕分组' },
-    [['subtitles', '内容'], ['text', '样式'], ['animation', '动画']].map(([id, label]) => element('button', {
+    [['subtitles', '内容'], ['translation', '翻译'], ['text', '样式'], ['animation', '动画']].map(([id, label]) => element('button', {
       type: 'button', class: state.tab === id ? 'active' : '', 'aria-pressed': String(state.tab === id),
       onclick: () => { state.tab = id; inspector.root.scrollTop = 0; inspector.render(); },
     }, label))));
+
+  appendTranslationSection(panel, inspector, project, subtitles, state, note, button, field);
 
   const style = subtitles.style;
   const fontSize = element('input', { type: 'number', min: 12, max: 160, step: 1, value: style.fontSize, 'aria-label': '字号' });

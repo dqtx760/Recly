@@ -14,6 +14,7 @@ const { makeScreenMotionClip, createScreenMotionClipAtTime, evaluateScreenMotion
 const { makeClip: makeZoomClip } = require('../src/core/zoom');
 const { Compositor, createMockCanvas, renderPerspectiveMesh } = require('../src/renderer/editor/render');
 const { audioTracks } = require('../src/renderer/editor/export');
+const { buildMuxArguments } = require('../src/main/ffmpeg');
 
 const near = (actual, expected, tolerance = 1e-4, label = '') =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${label} expected ${expected}, got ${actual}`);
@@ -584,6 +585,32 @@ test('audioTracks: 保留全局静音但被片段解除静音的音轨', () => {
 
   project.timeline.segments[0].audio = { isMicrophoneMuted: false, microphoneVolume: 0.6 };
   assert.deepEqual(audioTracks('project-dir', project).map((track) => track.kind), ['microphone'], '全静音且未被覆盖的系统音轨应省略');
+});
+
+test('导入音频音量保存后传入预览及导出混流', () => {
+  const project = model.makeProject({
+    name: 'Timeline Audio Volume Test',
+    media: { screen: { duration: 10, width: 1920, height: 1080 } },
+    capture: {},
+  });
+  project.timeline.audioClips.push({
+    id: 'music-volume', file: 'media/background.mp3', kind: 'music', name: '背景音乐',
+    startTime: 2, sourceStart: 0.5, sourceEnd: 4.5, sourceDuration: 8, volume: 0.37,
+  });
+
+  const savedProject = model.normalizeProject(JSON.parse(JSON.stringify(project)));
+  assert.equal(savedProject.timeline.audioClips[0].volume, 0.37, '保存并重开项目保留音频片段音量');
+  const [track] = audioTracks('project-dir', savedProject);
+  assert.equal(track.volume, 0.37, '导出轨道采用保存的片段音量');
+  assert.equal(track.startTime, 2);
+  assert.equal(track.sourceStart, 0.5);
+  assert.equal(track.duration, 4);
+  const args = buildMuxArguments({
+    videoFile: null, audioTracks: [track], segments: savedProject.timeline.segments,
+    sourceDuration: 10, outputDuration: 10, outputFile: 'output.m4a',
+  });
+  const filter = args[args.indexOf('-filter_complex') + 1];
+  assert.match(filter, /volume=0\.3700/, 'FFmpeg 混流过滤器收到音量百分比对应的增益');
 });
 
 // ==========================================

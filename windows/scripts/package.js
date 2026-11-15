@@ -11,6 +11,7 @@ const resources = path.join(root, '..', 'Resources');
 const fonts = path.join(resources, 'Fonts');
 const whisper = path.join(root, 'runtime', 'whisper');
 const agent = path.join(root, 'agent');
+const music = path.join(root, 'assets', 'music');
 const appIconPng = path.join(root, 'assets', 'AppIconMaster.png');
 const license = path.join(root, '..', 'LICENSE');
 const build = path.join(root, 'build');
@@ -35,10 +36,10 @@ async function main() {
     arch: 'x64',
     out: outputDirectory,
     overwrite: false,
-    asar: { unpack: '**/node_modules/koffi/**' },
+    asar: { unpack: '**/node_modules/{koffi,@koromix/koffi-win32-x64}/**' },
     icon,
-    extraResource: [fonts, appIconPng, icon, license, whisper, agent],
-    ignore: [/^\/(dist|build|builds|test|scripts|runtime)($|\/)/, /\.bat$/],
+    extraResource: [fonts, appIconPng, icon, license, whisper, agent, music],
+    ignore: [/^\/(dist(?:-[^/]*)?|build|builds|test|scripts|runtime)($|\/)/, /^\/assets\/music($|\/)/, /\.bat$/],
     win32metadata: { CompanyName: 'Recly', FileDescription: 'Recly', ProductName: 'Recly' },
   });
   console.log(`\n打包完成：${path.join(output, 'Recly.exe')}`);

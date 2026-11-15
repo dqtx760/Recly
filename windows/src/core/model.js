@@ -121,8 +121,8 @@ function defaultMotion() {
     cursorSpringStiffness: 450,
     cursorSpringDamping: 66,
     defaultZoomEasing: 'spring',
-    defaultZoomTransitionDuration: 0.7,
-    defaultZoomScale: 1.6,
+    defaultZoomTransitionDuration: 0.6,
+    defaultZoomScale: 1.5,
   };
 }
 
@@ -146,9 +146,9 @@ function makeProject({ name, media, capture }) {
     audio: defaultAudio(),
     subtitles: normalizeSubtitles(),
     openingSequence: defaultOpeningSequence(),
-    previewQuality: 'balanced',
+    previewQuality: 'full',
     zoomAnimations: [],
-    timeline: { segments: [{ id: randomUUID(), sourceStart: 0, sourceEnd: duration, speed: 1 }], screenMotionClips: [], cameraMotionClips: [], mosaicClips: [], stickerClips: [] },
+    timeline: { segments: [{ id: randomUUID(), sourceStart: 0, sourceEnd: duration, speed: 1 }], screenMotionClips: [], cameraMotionClips: [], mosaicClips: [], stickerClips: [], audioClips: [] },
     markers: [],
     export: { kind: 'video', resolution: 'source', frameRate: 60 },
   };
@@ -286,14 +286,15 @@ function normalizeProject(project) {
   project.audio = merge(defaultAudio(), project.audio);
   project.subtitles = normalizeSubtitles(project.subtitles);
   project.openingSequence = merge(defaultOpeningSequence(), project.openingSequence);
-  project.previewQuality = project.previewQuality === 'full' ? 'full' : 'balanced';
+  project.previewQuality = project.previewQuality === 'balanced' ? 'balanced' : 'full';
   project.zoomAnimations = project.zoomAnimations || [];
   project.markers = project.markers || [];
   project.export = merge({ kind: 'video', resolution: 'source', frameRate: 60 }, project.export);
-  if (!project.timeline || !project.timeline.segments || !project.timeline.segments.length) {
-    project.timeline = { segments: [{ id: randomUUID(), sourceStart: 0, sourceEnd: project.media.screen.duration, speed: 1 }] };
+  if (!project.timeline) project.timeline = {};
+  if (!Array.isArray(project.timeline.segments)) {
+    project.timeline.segments = [{ id: randomUUID(), sourceStart: 0, sourceEnd: project.media.screen.duration, speed: 1 }];
   }
-  for (const key of ['screenMotionClips', 'cameraMotionClips', 'mosaicClips', 'stickerClips']) {
+  for (const key of ['screenMotionClips', 'cameraMotionClips', 'mosaicClips', 'stickerClips', 'audioClips']) {
     if (!Array.isArray(project.timeline[key])) project.timeline[key] = [];
   }
   return project;

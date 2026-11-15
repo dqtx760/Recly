@@ -150,16 +150,16 @@ function createMockBridge(initialState = 0) {
   });
 
 
-  await test('恢复逻辑：若无保存状态，restoreTaskbar 兜底还原为 ABS_ALWAYSONTOP', () => {
+  await test('恢复逻辑：没有隐藏记录时不改动用户任务栏设置', () => {
     _resetState();
     const mock = createMockBridge(ABS_AUTOHIDE);
     _setNativeBridge(mock);
 
     assert.equal(getSavedTaskbarState(), null);
-    const success = restoreTaskbar();
-    assert.equal(success, true);
-    // 兜底还原为 ABS_ALWAYSONTOP
-    assert.equal(mock.getState(), ABS_ALWAYSONTOP);
+    assert.equal(restoreTaskbar(), false);
+    assert.equal(mock.getState(), ABS_AUTOHIDE);
+    assert.equal(mock.getCalls().length, 0, '没有隐藏记录时不应调用 SHAppBarMessage');
+    assert.equal(mock.getShowWindowCalls().length, 0, '没有隐藏记录时不应改动任务栏窗口');
     assert.equal(getSavedTaskbarState(), null);
     assert.equal(isTaskbarAutoHideActive(), false);
   });
@@ -262,7 +262,7 @@ function createMockBridge(initialState = 0) {
   });
 
   // 如果是在 Windows 环境下，测试实际 Native 调用的可执行性（不残留修改）
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' && process.env.RECLY_TEST_NATIVE_TASKBAR === '1') {
     await test('Windows 原生环境：SHAppBarMessage 原生调用及状态恢复自洽', () => {
       _resetState();
       _setNativeBridge(null); // 清除 mock，让它懒加载真实 koffi + shell32

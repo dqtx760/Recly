@@ -2,233 +2,132 @@
 <html lang="zh-Hans">
 <head>
   <meta charset="utf-8">
-  <title>Recly 录屏主控台</title>
+  <title>Recly</title>
   <link rel="stylesheet" href="common.css">
   <link rel="stylesheet" href="recorder.css">
 </head>
 <body>
   <div class="recorder-console">
-    <!-- 顶栏 Header -->
     <header class="console-header">
       <div class="brand">
-        <div class="brand-icon">
-          <img src="../../assets/AppIconMaster.png" alt="" aria-hidden="true">
-        </div>
-        <span class="brand-title">Recly 录屏主控台</span>
+        <div class="brand-icon"><img src="../../assets/AppIconMaster.png" alt="" aria-hidden="true"></div>
+        <span class="brand-title">Recly</span>
       </div>
       <div class="header-controls">
-        <button class="win-btn" id="win-min" title="最小化">
-          <svg width="12" height="12" viewBox="0 0 12 12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.3"/></svg>
-        </button>
-        <button class="win-btn close" id="win-close" title="关闭">
-          <svg width="12" height="12" viewBox="0 0 12 12"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.3"/><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.3"/></svg>
-        </button>
+        <button class="tool-btn header-library" id="header-library" title="打开工程文件夹" aria-label="打开工程文件夹"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7V5a1 1 0 0 1 1-1h6l2 3h8a1 1 0 0 1 1 1v11H3z"/></svg></button>
+        <button class="win-btn" id="win-tray" title="隐藏到系统托盘" aria-label="隐藏到系统托盘"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg></button>
+        <button class="win-btn" id="win-min" title="最小化" aria-label="最小化"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.3"/></svg></button>
+        <button class="win-btn close" id="win-close" title="关闭" aria-label="关闭"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.3"/><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.3"/></svg></button>
       </div>
     </header>
 
-    <div class="console-body">
-      <!-- 待机面板：主控台 (#idle) -->
-      <div id="idle" class="panel">
-        <!-- Section 1: 录制模式 (Recording Target) -->
-        <section class="section-mode">
-          <div class="mode-grid">
-            <button class="source active" data-source="display" title="全屏录制">
-              <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-              <div class="mode-title">全屏录制</div>
-            </button>
-            <button class="source" data-source="window" title="窗口录制">
-              <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9.5h18"/><circle cx="6.3" cy="7.3" r=".4"/><circle cx="8.6" cy="7.3" r=".4"/></svg>
-              <div class="mode-title">窗口录制</div>
-            </button>
-            <button class="source" data-source="area" title="选定区域">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" stroke-dasharray="0"/><path d="M11 4h2M11 20h2M4 11v2M20 11v2"/></svg>
-              <div class="mode-title">选定区域</div>
-            </button>
+    <div class="capture-controls">
+      <div class="capture-control-main">
+        <button class="mode-picker" id="mode-picker" type="button" title="切换录制模式" aria-label="录制模式">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+          <span id="mode-label">全屏录制</span>
+        </button>
+        <div class="device-controls">
+          <div class="top-device" id="cam-top-row">
+            <video id="camera-inline-preview" autoplay muted playsinline aria-label="摄像头实时预览"></video>
+            <button class="top-device-toggle" id="cam-global" title="切换摄像头" aria-label="切换摄像头录制"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="2.5"/><path d="m16 11 5-3v8l-5-3z"/></svg><span class="camera-preview-label">点击开启摄像头</span><i class="toggle-indicator"></i></button>
           </div>
-          <div class="selection-pill" id="selection-pill">
-            <span class="pill-dot"></span>
-            <svg class="icon target-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-            <span class="pill-label">录制目标：</span>
-            <span class="pill-value" id="source-summary">主显示器 (1920×1080)</span>
+          <div class="top-device" id="mic-top-row">
+            <button class="top-device-toggle" id="mic" title="单击开关麦克风，右键选择设备" aria-label="麦克风：单击开关，右键选择设备"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg><span>麦克风</span><i class="toggle-indicator"></i></button>
+            <div class="mic-device-tip" id="mic-device-tip" role="status" hidden></div>
+            <div class="mic-level" id="mic-level" role="meter" aria-label="麦克风输入音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
           </div>
-        </section>
-
-        <!-- Section 2: 设备与音频 (Devices & Audio) -->
-        <section class="section-devices">
-          <!-- 麦克风 (Microphone) -->
-          <div class="device-row" id="mic-row">
-            <div class="device-info">
-              <div class="device-icon">
-                <svg class="icon" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
-              </div>
-              <div class="device-meta">
-                <div class="device-title">麦克风 <span id="mic-status" class="device-status">就绪</span></div>
-                <button class="device-detail device-picker" id="mic-name" type="button" aria-label="选择麦克风" title="选择麦克风"><span class="device-picker-label" id="mic-name-label">系统默认麦克风</span></button>
-              </div>
-            </div>
-            <button class="toggle-switch on" id="mic" title="切换麦克风（右键选择设备）"></button>
-          </div>
-
-          <!-- 摄像头 (Camera) -->
-          <div class="device-row" id="cam-row">
-            <div class="device-info">
-              <div class="device-icon">
-                <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="2.5"/><path d="m16 11 5-3v8l-5-3z"/></svg>
-              </div>
-              <div class="device-meta">
-                <div class="device-title">摄像头 <span id="cam-status" class="device-status">关闭</span></div>
-                <button class="device-detail device-picker" id="cam-name" type="button" aria-label="选择摄像头" title="选择摄像头"><span class="device-picker-label" id="cam-name-label">画中画人像</span></button>
-              </div>
-            </div>
-            <button class="toggle-switch" id="cam" title="切换摄像头（右键选择设备）"></button>
-          </div>
-
-          <!-- 扬声器 (System Audio / Speaker) -->
-          <div class="device-row" id="sys-row">
-            <div class="device-info">
-              <div class="device-icon">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M4 10v4h3l5 4V6L7 10z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10"/></svg>
-              </div>
-              <div class="device-meta">
-                <div class="device-title">扬声器声音</div>
-                <div class="device-detail" id="sys-desc">录制系统内部声音</div>
-              </div>
-            </div>
-            <button class="toggle-switch on" id="sys" title="切换系统声音"></button>
-          </div>
-        </section>
-
-        <section class="desktop-icons-setting">
-          <div class="desktop-icons-meta">
-            <b>录制时隐藏桌面图标</b>
-            <small>结束、取消或出错后恢复原状态</small>
-          </div>
-          <button class="toggle-switch" id="desktop-icons" type="button" role="switch" aria-checked="false" title="录制桌面或区域时隐藏桌面图标"></button>
-        </section>
-
-        <!-- Section 3: 保存位置 (Save Location) -->
-        <section class="section-save">
-          <div class="save-path-wrap">
-            <div class="save-icon">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
-            </div>
-            <b class="save-path-label">工程</b>
-            <span class="save-dir-text" id="save-dir-path" title="">正在读取存储路径…</span>
-          </div>
-          <div class="save-btns">
-            <button id="change-save-dir" class="btn-change" title="更改保存目录">更改</button>
-            <button id="open-save-dir" class="btn-change" title="在资源管理器中打开保存文件夹">打开</button>
-          </div>
-          <!-- 兼容旧版状态显示 -->
-          <div class="status" id="hint" style="display:none"><b></b><small></small></div>
-        </section>
-
-        <section class="section-save">
-          <div class="save-path-wrap">
-            <b class="save-path-label">导出位置</b>
-            <span class="save-dir-text" id="export-dir-path" title="">未设置，每次导出时选择</span>
-          </div>
-          <div class="save-btns">
-            <button id="change-export-dir" class="btn-change" title="设置后直接导出到此文件夹">设置</button>
-          </div>
-        </section>
-
-        <!-- Section 4: 底部工具栏 -->
-        <footer class="footer-toolbar">
-          <button class="tool-btn" id="library" title="打开项目库">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
-            <span>项目库</span>
-          </button>
-          <button class="tool-btn" id="shortcuts-btn" title="全局快捷键设置">
-            <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            <span>快捷键</span>
-          </button>
-          <button class="tool-btn" id="memo" title="悬浮提词器（录制时不入画）">
-            <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M4 8.5h16M8 12.5h8M8 16h5"/></svg>
-            <span>提词器</span>
-          </button>
-          <button class="tool-btn" hidden id="marker" title="添加剪辑标记 (Ctrl+Alt+M)">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M6 21V4M6 5h11l-2 3.5 2 3.5H6"/></svg>
-            <span>标记</span>
-          </button>
-          <button class="tool-btn danger" hidden id="discard" title="放弃本次录制 (Ctrl+Alt+D)">放弃</button>
-          <button id="quit" style="display:none" title="退出"></button>
-        </footer>
-
-        <!-- Section 5: 开始录制按钮 -->
-        <section class="section-rec">
-          <button class="btn-rec" id="start" title="开始录制 (Ctrl+Alt+R)">
-            <span class="rec-dot"></span>
-            <span class="rec-label">开始录制</span>
-            <span id="timer" hidden>00:00</span>
-          </button>
-        </section>
-      </div>
-
-      <!-- 整理素材中面板 (#busy) -->
-      <div id="busy" class="panel" hidden>
-        <div class="spinner"></div>
-        <div class="busy-meta">
-          <b id="busyTitle">正在整理素材…</b>
-          <small>结束前请不要关闭 Recly</small>
-        </div>
-      </div>
-
-      <!-- 录制完成面板 (#done) -->
-      <div id="done" class="panel" hidden>
-        <div class="done-card">
-          <div class="done-icon">
-            <svg class="icon" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
-          </div>
-          <b class="done-title" id="doneTitle">录制完成：未命名项目</b>
-          <small class="done-detail" id="doneDetail">正在生成自动缩放轨迹…</small>
-        </div>
-        <div class="done-actions">
-          <button class="btn-primary-big" id="edit">
-            <span>进入剪辑编辑</span>
-          </button>
-          <div class="done-sub-actions">
-            <button class="btn-sub" id="reveal">打开文件夹</button>
-            <button class="btn-sub" id="again">返回主控台</button>
+          <div class="top-device" id="sys-top-row">
+            <button class="top-device-toggle" id="sys" title="切换系统声音"><svg class="icon" viewBox="0 0 24 24"><path d="M4 10v4h3l5 4V6L7 10z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10"/></svg><span>扬声器</span><i class="toggle-indicator"></i></button>
           </div>
         </div>
+        <button class="btn-rec" id="start" title="开始录制 (Ctrl+Alt+R)" aria-label="开始录制"><span class="rec-dot"></span><span class="rec-label">REC</span></button>
       </div>
+      <div class="capture-summary-row"><button class="selection-pill" id="selection-pill" type="button" title="更改录制目标">
+        <svg class="icon target-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        <span class="pill-label">显示分辨率</span>
+        <span class="pill-value" id="source-summary">主显示器 (1920×1080)</span>
+        <span class="capture-ready pending" id="ready-status" role="status">准备中…</span>
+      </button><button class="summary-shortcut" id="summary-memo" type="button" title="提词器" aria-label="显示或隐藏提词器" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></button><button class="compact-toggle" id="compact-toggle" type="button" title="折叠设置区域" aria-label="折叠设置区域" aria-expanded="true" aria-controls="recorder-workspace"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 15 7-7 7 7"/></svg></button></div>
+    </div>
+
+    <p id="recording-error" class="recording-error" role="alert" hidden></p>
+    <div class="workspace" id="recorder-workspace">
+      <nav class="main-nav" aria-label="主菜单">
+        <button class="nav-item active" data-page="home"><span>⌂</span>首页</button>
+        <button class="nav-item" data-page="general"><span>⚙</span>常规</button>
+        <button class="nav-item" data-page="video"><span>▣</span>录像</button>
+        <button class="nav-item" data-page="about"><span>ⓘ</span>关于</button>
+      </nav>
+      <main class="page-content">
+        <section class="page active" id="page-home" data-page="home">
+          <section class="history-card" id="recording-history-card"><h2><span>▣</span>录制历史工程<button class="btn danger" id="delete-selected-projects" type="button" hidden>删除所选</button></h2><div id="recording-location" class="history-location"></div><div id="recording-history" class="history-list" role="list"></div></section>
+        </section>
+
+        <section class="page" id="page-general" data-page="general" hidden>
+          <section class="setting-card path-setting"><div class="setting-icon">▰</div><b>工程文件夹位置</b><span class="save-dir-text" id="save-dir-path" title="">正在读取存储路径…</span><button id="change-save-dir" class="btn ghost">更改</button><button id="open-save-dir" class="btn ghost">打开</button></section>
+          <section class="setting-card path-setting"><div class="setting-icon">↗</div><b>视频导出位置</b><span class="save-dir-text" id="export-dir-path" title="">未设置，每次导出时选择</span><button id="change-export-dir" class="btn ghost">设置</button><button id="open-export-dir" class="btn ghost" disabled>打开</button></section>
+          <section class="setting-card"><div class="setting-icon">◉</div><div class="setting-copy"><b>录制时隐藏桌面图标</b><small>结束、取消或出错后恢复原状态</small></div><button class="toggle-switch" id="desktop-icons" type="button" role="switch" aria-checked="false" title="录制桌面或区域时隐藏桌面图标"></button></section>
+          <button class="setting-card setting-link" id="shortcuts-btn"><div class="setting-icon">⌨</div><b>快捷键设置</b><span>配置录制快捷键 ›</span></button>
+          <div class="setting-note" id="hint" style="display:none"><b></b><small></small></div>
+        </section>
+
+        <section class="page" id="page-video" data-page="video" hidden>
+          <section class="setting-group"><h2>快捷键设置</h2>
+            <button class="setting-card setting-link" id="record-shortcuts"><div class="setting-icon">◉</div><b>开始 / 停止录制</b><span>设置 ›</span></button>
+            <button class="setting-card setting-link" id="pause-shortcuts"><div class="setting-icon">Ⅱ</div><b>暂停 / 继续录制</b><span>设置 ›</span></button>
+          </section>
+          <section class="setting-group"><h2>摄像头</h2>
+            <div class="setting-card"><div class="setting-icon">◉</div><div class="setting-copy"><b>显示悬浮摄像头预览</b><small>显示右上角悬浮画面，关闭后仍可录制摄像头</small></div><button class="toggle-switch" id="camera-preview-toggle" type="button" role="switch" aria-checked="false" aria-label="显示悬浮摄像头预览"></button></div>
+            <div class="setting-card"><div class="setting-icon">◉</div><div class="setting-copy"><b>采集分辨率</b><small>设置摄像头录制规格，帧率为 30 帧</small></div><select class="setting-select" id="camera-quality" aria-label="摄像头采集分辨率"><option value="4k">4K · 30 帧</option><option value="1080p">1080p · 30 帧</option><option value="720p">720p · 30 帧</option></select></div>
+          </section>
+          <section class="setting-group"><h2>提词器</h2>
+            <div class="setting-card"><div class="setting-icon">▤</div><div class="setting-copy"><b>提词器窗口</b><small>打开后显示悬浮提词内容，录制时不会进入画面</small></div><button class="toggle-switch" id="memo" type="button" role="switch" aria-checked="false" title="显示或隐藏提词器"></button></div>
+          </section>
+        </section>
+
+        <section class="page" id="page-about" data-page="about" hidden>
+          <div class="about-card">
+            <div class="about-intro">
+              <div class="about-logo"><img src="../../assets/AppIconMaster.png" alt="Recly"></div>
+              <div><h2>Recly</h2><p>一款集屏幕录制与视频剪辑于一体的工具，也可以通过 AI 助手协助完成剪辑。</p></div>
+            </div>
+            <section class="about-links" aria-label="文章与工具">
+              <h3>文章与工具</h3>
+              <div class="about-link-list">
+                <a href="https://dqtx.cc" data-external-url>dqtx.cc ↗</a>
+                <a href="https://os.dqtx.cc" data-external-url>os.dqtx.cc ↗</a>
+                <a href="https://blog.dqtx.cc" data-external-url>blog.dqtx.cc ↗</a>
+              </div>
+            </section>
+            <section class="about-links" aria-label="关注更新">
+              <h3>关注更新</h3>
+              <div class="about-link-list about-social-list"><span>B 站</span><span>YouTube</span><span>即刻</span><span>CSDN</span></div>
+            </section>
+            <section class="about-wechat">
+              <div><h3>公众号：微信搜索「大强同学」</h3><p>扫码关注，获取更多内容。</p></div>
+              <img src="../../assets/public-account-qr.png" alt="大强同学微信公众号二维码">
+            </section>
+            <div class="about-version">Recly · 版本 <span id="app-version">读取中…</span></div>
+          </div>
+        </section>
+
+        <div id="busy" class="status-panel" hidden><div class="spinner"></div><div class="busy-meta"><b id="busyTitle">正在整理素材…</b><small>结束前请不要关闭 Recly</small></div></div>
+        <div id="done" class="status-panel" hidden><div class="done-card"><div class="done-icon">!</div><b class="done-title" id="doneTitle">这次录制没有保存成功</b><small class="done-detail" id="doneDetail"></small></div><button class="btn ghost" id="again">返回主界面</button></div>
+      </main>
     </div>
   </div>
 
-  <!-- 全局快捷键设置 Modal (#shortcuts-modal) -->
   <div id="shortcuts-modal" class="modal-backdrop" hidden>
-    <div class="modal-dialog">
-      <div class="modal-header">
-        <h3>⚙️ 全局快捷键设置</h3>
-        <button id="shortcuts-close" class="modal-close-btn">&times;</button>
-      </div>
+    <div class="modal-dialog"><div class="modal-header"><h3>快捷键设置</h3><button id="shortcuts-close" class="modal-close-btn">&times;</button></div>
       <div class="modal-body">
-        <div class="shortcut-row">
-          <label for="sc-recordToggle">开始 / 停止录制</label>
-          <input type="text" id="sc-recordToggle" readonly data-action="recordToggle" placeholder="点击后按下按键">
-        </div>
-        <div class="shortcut-row">
-          <label for="sc-recordPause">暂停 / 恢复录制</label>
-          <input type="text" id="sc-recordPause" readonly data-action="recordPause" placeholder="点击后按下按键">
-        </div>
-        <div class="shortcut-row">
-          <label for="sc-recordMarker">添加剪辑标记</label>
-          <input type="text" id="sc-recordMarker" readonly data-action="recordMarker" placeholder="点击后按下按键">
-        </div>
-        <div class="shortcut-row">
-          <label for="sc-recordDiscard">放弃录制</label>
-          <input type="text" id="sc-recordDiscard" readonly data-action="recordDiscard" placeholder="点击后按下按键">
-        </div>
+        <div class="shortcut-row"><label for="sc-recordToggle">开始 / 停止录制</label><input type="text" id="sc-recordToggle" readonly data-action="recordToggle" placeholder="点击后按下按键"></div>
+        <div class="shortcut-row"><label for="sc-recordPause">暂停 / 恢复录制</label><input type="text" id="sc-recordPause" readonly data-action="recordPause" placeholder="点击后按下按键"></div>
         <div id="shortcuts-error" class="shortcuts-error" hidden></div>
       </div>
-      <div class="modal-footer">
-        <button id="shortcuts-reset" class="btn ghost">恢复默认</button>
-        <button id="shortcuts-save" class="btn primary">保存</button>
-      </div>
+      <div class="modal-footer"><button id="shortcuts-reset" class="btn ghost">恢复默认</button><button id="shortcuts-save" class="btn primary">保存</button></div>
     </div>
   </div>
-
   <script src="recorder.js"></script>
 </body>
 </html>
