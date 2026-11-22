@@ -16,18 +16,27 @@ class MockWindow extends EventEmitter {
     this.minimizeCalls = 0;
     this.visible = true;
     this.minimized = false;
+    this.skipTaskbar = false;
     this.webContents = new EventEmitter();
     this.webContents.id = 7;
+    this.webContents.isLoading = () => true;
   }
   isDestroyed() { return false; }
   isVisible() { return this.visible; }
   isMinimized() { return this.minimized; }
-  showInactive() { this.visible = true; this.showInactiveCalls += 1; }
+  showInactive() { this.showInactiveCalls += 1; this.visible = true; this.emit('show'); }
   minimize() { this.minimized = true; this.minimizeCalls += 1; }
   getBounds() { return { x: 400, y: 160, width: 1400, height: 780 }; }
-  show() { this.showCalls += 1; }
-  hide() { this.hideCalls += 1; }
+  show() {
+    this.showCalls += 1;
+    if (this.visible) return;
+    this.visible = true;
+    this.emit('show');
+  }
+  hide() { this.hideCalls += 1; this.visible = false; }
   focus() { this.focusCalls += 1; }
+  setSkipTaskbar(skip) { this.skipTaskbar = skip; }
+  setIgnoreMouseEvents() {}
 }
 
 const mainPath = path.join(__dirname, '../src/main/main.js');
@@ -35,6 +44,8 @@ const mainSource = fs.readFileSync(mainPath, 'utf8');
 const taskbarStart = mainSource.indexOf('function ensureRecorderTaskbarPresence(');
 const start = mainSource.indexOf('function openEditor(');
 const end = mainSource.indexOf('\nfunction getEditorWindow(', start);
+const showRecorderStart = mainSource.indexOf('function showRecorder(');
+const showRecorderEnd = mainSource.indexOf('\nfunction showLibrary(', showRecorderStart);
 assert.ok(start >= 0 && end > start, '定位真实 openEditor 函数');
 
 const directory = path.join('D:\\fixture-root', 'fixture.dogscproject');
@@ -43,7 +54,7 @@ const win = new MockWindow();
 const recorderWindow = new MockWindow();
 let createWindowCall;
 const context = {
-  recorderWindow,
+  recorderWindow: null,
   editorWindows,
   screen: {
     getPrimaryDisplay: () => ({ workArea: { x: 100, y: 50, width: 2000, height: 1000 } }),
@@ -55,9 +66,18 @@ const context = {
   activeExportSession: null,
   activeExport: null,
   agentService: null,
-  createWindow(...args) { createWindowCall = args; return win; },
+  memoWindow: null,
+  updateRecorderTaskbarIcon() {},
+  excludeFromCapture() {},
+  createWindow(...args) {
+    if (args[0] === 'recorder.html') return recorderWindow;
+    createWindowCall = args;
+    return win;
+  },
 };
 
+vm.runInNewContext(mainSource.slice(showRecorderStart, showRecorderEnd), context, { filename: mainPath });
+assert.equal(context.showRecorder(), recorderWindow);
 const taskbarSource = mainSource.slice(taskbarStart, start);
 vm.runInNewContext(`${taskbarSource}\nglobalThis.__ensureRecorderTaskbarPresence = ensureRecorderTaskbarPresence;`, context, { filename: mainPath });
 recorderWindow.visible = false;
@@ -86,6 +106,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(createWindowCall[1])), {
 assert.deepEqual(JSON.parse(JSON.stringify(createWindowCall[2])), { project: directory });
 assert.equal(editorWindows.get(directory), win);
 assert.equal(recorderWindow.hideCalls, 0, '编辑器加载完成前保留录制器任务栏按钮');
+assert.equal(recorderWindow.skipTaskbar, false);
 assert.equal(win.showCalls, 0, '首次创建后先等待 renderer 加载');
 assert.equal(win.webContents.listenerCount('did-finish-load'), 1, '首次显示绑定到 did-finish-load');
 assert.equal(win.listenerCount('ready-to-show'), 0, '不再依赖 ready-to-show');
@@ -95,7 +116,15 @@ assert.equal(win.showCalls, 0, 'ready-to-show 不能替代页面加载完成事�
 win.webContents.emit('did-finish-load');
 assert.equal(win.showCalls, 1, '页面加载完成后显示窗口');
 assert.equal(recorderWindow.hideCalls, 1, '编辑器显示后才隐藏录制器');
+assert.equal(recorderWindow.skipTaskbar, true, '编辑器显示后应移除主控台的任务栏预览');
 win.webContents.emit('did-finish-load');
 assert.equal(win.showCalls, 1, '首次显示回调只执行一次');
+
+assert.equal(context.showRecorder(), recorderWindow);
+assert.equal(recorderWindow.skipTaskbar, false, '主动重新打开主控台应恢复任务栏入口');
+assert.equal(context.__openEditor(directory), win);
+assert.equal(recorderWindow.skipTaskbar, true, '切回已打开的编辑器也应移除主控台预览');
+win.emit('closed');
+assert.equal(recorderWindow.skipTaskbar, false, '关闭最后一个编辑器后应恢复主控台的任务栏入口');
 
 console.log('Editor window show test passed: did-finish-load displays the initial window and preserves centered 70% width, 78% height bounds.');

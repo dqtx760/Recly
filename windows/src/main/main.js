@@ -275,6 +275,7 @@ function showRecorder() {
   excludeFromCapture(recorderWindow);
   recorderWindow.once('ready-to-show', () => recorderWindow.show());
   recorderWindow.on('show', () => {
+    recorderWindow.setSkipTaskbar(false);
     updateRecorderTaskbarIcon();
     if (!recorderWindow.webContents.isLoading()) {
       recorderWindow.webContents.send('recorder:shown');
@@ -327,12 +328,18 @@ function ensureRecorderTaskbarPresence() {
   return true;
 }
 
+function hideRecorderForEditor() {
+  if (!recorderWindow || recorderWindow.isDestroyed()) return;
+  recorderWindow.setSkipTaskbar(true);
+  recorderWindow.hide();
+}
+
 function openEditor(directory) {
   const existing = editorWindows.get(directory);
   if (existing && !existing.isDestroyed()) {
     existing.show();
     existing.focus();
-    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.hide();
+    hideRecorderForEditor();
     return existing;
   }
   const area = recorderWindow && !recorderWindow.isDestroyed()
@@ -352,7 +359,7 @@ function openEditor(directory) {
   });
   win.webContents.once('did-finish-load', () => {
     win.show();
-    if (recorderWindow && !recorderWindow.isDestroyed()) recorderWindow.hide();
+    hideRecorderForEditor();
   });
   win.on('closed', () => {
     editorWindows.delete(directory);
