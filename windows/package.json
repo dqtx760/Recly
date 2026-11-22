@@ -12,6 +12,7 @@
     "start": "electron .",
     "selftest": "electron . --selftest",
     "agent": "node agent/recly-cli.js",
+    "record:website": "electron scripts/record-website.js --",
     "mcp": "node agent/recly-mcp.js",
     "test:regressions": "node scripts/test-regressions.js",
     "test:agent": "node test/agent-service.test.js && node test/transcription.test.js && node test/subtitles.test.js && node test/edit-commands.test.js && node test/store-agent.test.js && node test/agent-bridge.test.js && node test/assistant-plan.test.js && node test/assistant-service.test.js && node test/assistant-api.test.js && node test/assistant-model.test.js && node test/assistant-providers.test.js",

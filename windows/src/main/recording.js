@@ -103,11 +103,12 @@ function resolveSource(selection, activateWindow = true) {
 }
 
 class RecordingSession {
-  constructor({ projectsRoot, selection, frameRate = 60, name, hideDesktopIconsDuringRecording = false, desktopIcons = createDesktopIconsController() }) {
+  constructor({ projectsRoot, selection, frameRate = 60, name, hideDesktopIconsDuringRecording = false, desktopIcons = createDesktopIconsController(), pointerRecorder = null }) {
     this.selection = selection;
     this.frameRate = frameRate;
     this.hideDesktopIconsDuringRecording = hideDesktopIconsDuringRecording;
     this.desktopIcons = desktopIcons;
+    this.pointerRecorder = pointerRecorder;
     this.name = name || defaultProjectName();
     this.directory = uniqueProjectDirectory(projectsRoot, this.name);
     this.mediaDirectory = path.join(this.directory, 'media');
@@ -126,7 +127,7 @@ class RecordingSession {
           console.warn('[DogSC] 隐藏桌面图标失败：', error.message || error);
         }
       }
-      this.pointer = new PointerRecorder(this.source.getRect);
+      this.pointer = this.pointerRecorder || new PointerRecorder(this.source.getRect);
       this.pointer.start();
       this.capture = await media.startCapture({
         source: this.source.capture,

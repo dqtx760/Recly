@@ -122,6 +122,31 @@ npm run agent -- project.save '{"directory":"C:\\Users\\you\\Videos\\DogSC\\proj
 
 完整方法和参数以 [`windows/agent/api.js`](../agent/api.js) 为准。CLI 与 MCP 只服务本机已打开的工程，不提供远程访问入口。
 
+## 录制并剪辑网站演示
+
+在 Windows 上启动 Recly，确认 `ffmpeg` 和 `ffprobe` 在 `PATH` 中，然后在 `windows` 目录运行：
+
+```powershell
+npm run record:website -- 'https://example.com/'
+```
+
+脚本会打开独立浏览窗口，录制首页和最多三个二级标题所在的段落。匹配到页内导航时会实际点击，并把鼠标轨迹交给 Recly 生成点击波纹和跟随放大。Recly 会剪去段落之间的等待时间，保存可编辑工程，并将只有画面的 1080p B-roll 输出到配置的导出目录。若未配置，成片保存在系统「视频」下的「Recly 网站演示」目录。录制窗口需保持在前台可见。
+
+需要指定文件位置和交互顺序时，可传入新的 MP4 路径和 UTF-8 分镜文件：
+
+```powershell
+npm run record:website -- 'https://example.com/' 'D:\Videos\website.mp4' 'D:\Videos\shots.json'
+```
+
+分镜是 1–8 项的 JSON 数组。`caption` 为分镜说明，`heading` 匹配页面的一级、二级或三级标题。省略 `heading` 就回到页面顶部。`click.target` 是要点击的控件，`click.expect` 是点击后应出现在画面里的元素，`click.follow` 可选，用于让鼠标随后移向另一控件。三者都使用 CSS 选择器。示例：
+
+```json
+[
+  { "caption": "先看网页首页" },
+  { "heading": "功能介绍", "caption": "展开功能说明", "click": { "target": "#details-toggle", "expect": "#details-toggle[aria-expanded=true]" } }
+]
+```
+
 ## 验证
 
 `npm run test:agent` 始终执行单元测试。真实中文语音识别需显式设置 `RECLY_ASR_TEST_AUDIO` 为音频绝对路径，再运行 `node test/transcription.test.js`；程序和模型分别沿用 `RECLY_WHISPER_EXE`、`RECLY_WHISPER_MODEL`，未设置时使用 `runtime/whisper`。没有提供测试音频时会明确报告跳过真实识别。
