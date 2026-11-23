@@ -9,6 +9,13 @@ const { activeCues } = require('../../core/subtitles');
 const timeline = require('../../core/timeline');
 const { cursorLibrary } = require('./cursors');
 
+function cameraCoversCanvas(scene) {
+  const camera = scene.camera;
+  if (!camera || camera.opacity !== 1 || camera.cornerRadius !== 0 || scene.stickerBackdrop?.cameraSuppression > 0) return false;
+  const { x, y, width, height } = camera.rect;
+  return x <= 0 && y <= 0 && x + width >= scene.width && y + height >= scene.height;
+}
+
 function roundedRect(ctx, rect, radius) {
   const r = Math.max(Math.min(radius, rect.width / 2, rect.height / 2), 0);
   ctx.beginPath();
@@ -1029,18 +1036,20 @@ class Compositor {
     ctx.globalAlpha = 1;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    if (project.canvas.background?.kind === 'video') {
-      this.drawVideoBackground(ctx, project.canvas, width, height, scene.styleScale, frames.background || null);
-    } else {
-      ctx.drawImage(this.backgroundLayer(project.canvas, width, height, scene.styleScale, scene.outputTime ?? 0), 0, 0);
-    }
-    const screenVisibility = 1 - clamp(scene.stickerBackdrop?.screenSuppression ?? 0, 0, 1);
-    if (screenVisibility > 0.001) {
-      ctx.save();
-      ctx.globalAlpha *= screenVisibility;
-      this.drawScreen(ctx, scene.screen, frames.screen);
-      if (scene.cursor) this.drawCursor(ctx, scene.screen, scene.cursor);
-      ctx.restore();
+    if (!frames.camera || !cameraCoversCanvas(scene)) {
+      if (project.canvas.background?.kind === 'video') {
+        this.drawVideoBackground(ctx, project.canvas, width, height, scene.styleScale, frames.background || null);
+      } else {
+        ctx.drawImage(this.backgroundLayer(project.canvas, width, height, scene.styleScale, scene.outputTime ?? 0), 0, 0);
+      }
+      const screenVisibility = 1 - clamp(scene.stickerBackdrop?.screenSuppression ?? 0, 0, 1);
+      if (screenVisibility > 0.001) {
+        ctx.save();
+        ctx.globalAlpha *= screenVisibility;
+        this.drawScreen(ctx, scene.screen, frames.screen);
+        if (scene.cursor) this.drawCursor(ctx, scene.screen, scene.cursor);
+        ctx.restore();
+      }
     }
     const cameraVisibility = 1 - clamp(scene.stickerBackdrop?.cameraSuppression ?? 0, 0, 1);
     if (scene.camera && cameraVisibility > 0.001 && (frames.camera || frames.drawCameraPlaceholder)) {
@@ -1053,6 +1062,7 @@ class Compositor {
 }
 
 module.exports = {
+  cameraCoversCanvas,
   Compositor,
   createOffscreenCanvas,
   createMockCanvas,

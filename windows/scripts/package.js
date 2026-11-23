@@ -36,7 +36,7 @@ async function main() {
     arch: 'x64',
     out: outputDirectory,
     overwrite: false,
-    asar: { unpack: '**/node_modules/{koffi,@koromix/koffi-win32-x64}/**' },
+    asar: { unpack: '**/node_modules/{koffi,@koromix/koffi-win32-x64,node-av-lgpl,@seydx/node-av-lgpl-win32-x64-msvc}/**' },
     icon,
     extraResource: [fonts, appIconPng, icon, license, whisper, agent, music],
     ignore: [/^\/(dist(?:-[^/]*)?|build|builds|test|scripts|runtime)($|\/)/, /^\/assets\/music($|\/)/, /\.bat$/],

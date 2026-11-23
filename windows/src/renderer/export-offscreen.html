@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<canvas></canvas>
+<script>
+'use strict';
+
+const { openVideoFrames } = require('./editor/export-frame-renderer');
+
+window.prepareExport = async (job) => {
+  const canvas = document.querySelector('canvas');
+  canvas.width = job.width;
+  canvas.height = job.height;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const renderer = await openVideoFrames({ ...job, hardware: true });
+  window.drawExportFrame = async (frame) => { await renderer.draw(ctx, frame); };
+  window.addEventListener('unload', () => renderer.close(), { once: true });
+};
+</script>
+</html>

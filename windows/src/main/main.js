@@ -1,6 +1,12 @@
 'use strict';
 // DogSC Windows 版主进程：窗口管理、录制调度、项目库与导出混流。
 
+const { WORKER_FLAG, supportsNativeExport, runNativeExport } = require('./native-export');
+if (process.argv.includes(WORKER_FLAG)) {
+  require('./native-export-worker').main();
+  return;
+}
+
 const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShortcut, session, shell, Menu, Tray, clipboard, nativeImage, safeStorage } = require('electron');
 // 当前 Windows 运行环境下硬解视频预览会停帧；关闭视频解码加速，GPU 画布仍保持启用。
 if (process.platform === 'win32') app.commandLine.appendSwitch('disable-accelerated-video-decode');
@@ -919,6 +925,21 @@ function registerIpc() {
     activeExportSession = { directory: path.resolve(directory), sender: event.sender };
     return { ok: true };
   });
+  ipcMain.handle('export:render-native', async (event, job) => {
+    requireEditorRequest(event, job.directory);
+    const exportSession = activeExportSession;
+    if (exportSession?.sender !== event.sender || activeExport || !(await supportsNativeExport())) return null;
+    if (activeExportSession !== exportSession || exportSession.cancelled || event.sender.isDestroyed()) return null;
+    let task;
+    try {
+      return await runNativeExport(job, {
+        onSpawn: (runner) => { task = runner; activeExport = runner; },
+        onProgress: (progress) => { if (!event.sender.isDestroyed()) event.sender.send('export:native-progress', progress); },
+      });
+    } finally {
+      if (activeExport === task) activeExport = null;
+    }
+  });
   ipcMain.handle('export:end', (event, payload = {}) => {
     const directory = editorDirectoryForSender(event.sender);
     if (!activeExportSession || !directory || activeExportSession.sender !== event.sender || path.resolve(directory).toLowerCase() !== path.resolve(payload.directory || '').toLowerCase()) {
@@ -1374,7 +1395,11 @@ function registerIpc() {
     }
     return job.outputFile;
   });
-  ipcMain.on('export:cancel', (event) => { if (activeExport && activeExportSession?.sender === event.sender) activeExport.kill(); });
+  ipcMain.on('export:cancel', (event) => {
+    if (activeExportSession?.sender !== event.sender) return;
+    activeExportSession.cancelled = true;
+    activeExport?.kill();
+  });
   ipcMain.on('shell:open', (event, target) => shell.openPath(target));
   ipcMain.handle('shell:open-url', async (_event, target) => {
     try {

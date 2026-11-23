@@ -4,15 +4,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { ipcRenderer } = require('electron');
-const { canvasDimensions, exportVideoBitrate, evaluateBackground } = require('../../core/model');
+const { canvasDimensions, exportVideoBitrate } = require('../../core/model');
 const { resolveAudio } = require('../../core/audio');
-const { orderedClips } = require('../../core/zoom');
-const { PointerTrack } = require('../../core/pointer');
-const { evaluateScene } = require('../../core/scene');
 const timeline = require('../../core/timeline');
-const { Compositor } = require('./render');
-const { FrameSource } = require('./frame-source');
+const { openVideoFrames, loadPointerTrack } = require('./export-frame-renderer');
 
 const STALL_TIMEOUT = 20000;
 
@@ -30,15 +27,6 @@ async function loadVideoIndex(directory, track) {
   const index = await ipcRenderer.invoke('project:rebuild-index', path.join(directory, track.file));
   fs.writeFileSync(file, JSON.stringify(index));
   return index;
-}
-
-function loadPointerTrack(directory, project) {
-  if (!project.media.pointer) return null;
-  try {
-    return new PointerTrack(readJson(path.join(directory, project.media.pointer)).events);
-  } catch {
-    return null;
-  }
 }
 
 /// 参与导出的音轨：只要至少一个主片段解除静音且有音量，就保留该轨。
@@ -83,9 +71,10 @@ async function chooseEncoderConfig(width, height, frameRate, hardware) {
     bitrate: exportVideoBitrate(width, height, frameRate),
     bitrateMode: 'variable', latencyMode: 'quality', avc: { format: 'annexb' },
   };
-  // 优先 High Profile 硬件编码，依次退到软件编码与 Baseline。
-  const candidates = [[`avc1.6400${level}`, 'prefer-software'], [`avc1.4200${level}`, 'prefer-software'], [`avc1.4200${level}`, 'no-preference']];
-  if (hardware) candidates.unshift([`avc1.6400${level}`, 'prefer-hardware']);
+  // 先尝试两种 Profile 的硬件编码，避免高 Profile 硬件编码不可用时直接退到软件编码。
+  const candidates = [];
+  if (hardware) candidates.push([`avc1.6400${level}`, 'prefer-hardware'], [`avc1.4200${level}`, 'prefer-hardware']);
+  candidates.push([`avc1.6400${level}`, 'prefer-software'], [`avc1.4200${level}`, 'prefer-software'], [`avc1.4200${level}`, 'no-preference']);
   for (const [codec, hardwareAcceleration] of candidates) {
     const config = { ...base, codec, hardwareAcceleration };
     if ((await VideoEncoder.isConfigSupported(config)).supported) return config;
@@ -107,30 +96,19 @@ function guard(promise, label) {
 }
 
 /// 渲染全部画面并编码成 H.264 裸流文件。hardware 为 false 时解码与编码都走软件路径。
-async function renderVideo({ project, directory, rawFile, width, height, frameRate, totalFrames, hardware, onProgress, checkCancelled, frameHook, indexes }) {
-  const { segments } = project.timeline;
-  const source = project.media.screen;
-  const camera = project.media.camera && !project.camera.isHidden ? project.media.camera : null;
-  const background = project.canvas.background?.kind === 'video' ? project.canvas.background : null;
-  const compositor = new Compositor(directory);
-  await compositor.prepare(project);
-  const zoomClips = orderedClips(project.zoomAnimations);
-  const pointerTrack = loadPointerTrack(directory, project);
+async function renderVideo({ project, directory, rawFile, width, height, frameRate, totalFrames, hardware, encoderConfig, onProgress, checkCancelled, frameHook, indexes }) {
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d', { alpha: false });
-  const screenSource = new FrameSource(path.join(directory, source.file), indexes.screen, hardware);
-  const cameraSource = camera ? new FrameSource(path.join(directory, camera.file), indexes.camera, hardware) : null;
-  const backgroundSource = background ? new FrameSource(path.join(directory, background.file), indexes.background, hardware) : null;
-  const stream = fs.createWriteStream(rawFile);
+  let renderer;
+  let stream;
   let colorSpace = null;
   let encoderError = null;
   let encoder = null;
   const encodeFailure = () => Object.assign(new Error(`视频编码失败：${encoderError.message || encoderError}`), { codecFailure: true });
   try {
-    await screenSource.open();
-    if (cameraSource) await cameraSource.open();
-    if (backgroundSource) await backgroundSource.open();
-    const config = await chooseEncoderConfig(width, height, frameRate, hardware);
+    renderer = await openVideoFrames({ project, directory, width, height, frameRate, hardware, indexes });
+    stream = fs.createWriteStream(rawFile);
+    const config = encoderConfig || await chooseEncoderConfig(width, height, frameRate, hardware);
     encoder = new VideoEncoder({
       output: (chunk, metadata) => {
         const data = Buffer.allocUnsafe(chunk.byteLength);
@@ -148,25 +126,8 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
     for (let n = 0; n < totalFrames; n++) {
       checkCancelled();
       if (encoderError) throw encodeFailure();
-      const outputTime = n / frameRate;
-      const sourceTime = timeline.locate(segments, n / frameRate).sourceTime;
-      const frames = { screen: await guard(screenSource.frameAt(sourceTime), '解码屏幕画面'), camera: null, background: null };
-      if (backgroundSource) {
-        const duration = background.duration || Math.max(backgroundSource.lastTime - backgroundSource.firstTime, 0);
-        const backgroundTime = evaluateBackground(project.canvas, outputTime, { duration }).time;
-        frames.background = await guard(backgroundSource.frameAt(backgroundTime), '解码动态背景');
-      }
-      let cameraAspect = null;
-      if (cameraSource) {
-        const cameraTime = sourceTime - ((camera.offset || 0) + (project.camera?.timeOffset || 0));
-        if (cameraTime >= 0 && cameraTime <= camera.duration) {
-          frames.camera = await guard(cameraSource.frameAt(cameraTime), '解码摄像头画面');
-          cameraAspect = camera.width / camera.height;
-        }
-      }
-      const scene = evaluateScene(project, { time: sourceTime, outputTime, width, height, sourceAspect: source.width / source.height, cameraAspect, zoomClips, pointerTrack });
-      compositor.draw(ctx, project, scene, frames);
-      if (frameHook) await frameHook(n, canvas, { sourceTime, scene });
+      const frameInfo = await renderer.draw(ctx, n, guard);
+      if (frameHook) await frameHook(n, canvas, frameInfo);
 
       const frame = new VideoFrame(canvas, { timestamp: Math.round(n * 1e6 / frameRate), duration: Math.round(1e6 / frameRate) });
       encoder.encode(frame, { keyFrame: n % (frameRate * 2) === 0 });
@@ -187,10 +148,22 @@ async function renderVideo({ project, directory, rawFile, width, height, frameRa
     return { colorSpace, encoder: `${config.codec} / ${config.hardwareAcceleration}` };
   } finally {
     if (encoder && encoder.state !== 'closed') encoder.close();
-    stream.destroy();
-    screenSource.close();
-    if (cameraSource) cameraSource.close();
-    if (backgroundSource) backgroundSource.close();
+    stream?.destroy();
+    renderer?.close();
+  }
+}
+
+async function renderWithNativeEncoder(job, signal, onProgress) {
+  if (signal?.aborted) throw new ExportCancelled();
+  const progress = (_event, data) => onProgress(data);
+  const cancel = () => ipcRenderer.send('export:cancel');
+  ipcRenderer.on('export:native-progress', progress);
+  signal?.addEventListener('abort', cancel);
+  try {
+    return await ipcRenderer.invoke('export:render-native', job);
+  } finally {
+    ipcRenderer.removeListener('export:native-progress', progress);
+    signal?.removeEventListener('abort', cancel);
   }
 }
 
@@ -223,25 +196,44 @@ async function exportProject({ project, directory, outputFile, kind = 'video', r
 
   const { width, height } = canvasDimensions(project.canvas, resolution, project.media.screen);
   const totalFrames = Math.max(Math.round(outputDuration * frameRate), 1);
-  const rawFile = `${outputFile}.h264.tmp`;
+  const rawFile = `${outputFile}.${randomUUID()}.h264.tmp`;
   const camera = project.media.camera && !project.camera.isHidden ? project.media.camera : null;
   const indexes = {
     screen: await loadVideoIndex(directory, project.media.screen),
     camera: camera ? await loadVideoIndex(directory, camera) : null,
     background: project.canvas.background?.kind === 'video' ? await loadVideoIndex(directory, project.canvas.background) : null,
   };
-  const job = { project, directory, rawFile, width, height, frameRate, totalFrames, onProgress, checkCancelled, frameHook, indexes };
+  const renderSettings = { project, directory, rawFile, width, height, frameRate, totalFrames, indexes };
+  const job = { ...renderSettings, onProgress, checkCancelled, frameHook };
   try {
     let rendered;
-    try {
-      rendered = await renderVideo({ ...job, hardware: true });
-    } catch (error) {
-      // 硬件编解码卡住或报错时，自动改用软件路径完整重来一遍。
-      if (error.cancelled || !(error.stalled || error.codecFailure)) throw error;
-      console.warn('[DogSC] 硬件编解码未能完成，改用软件路径重试：', error.message);
-      onProgress({ stage: '硬件编码没有响应，正在改用软件编码重试', fraction: 0 });
-      rendered = await renderVideo({ ...job, hardware: false });
-      rendered.retriedAfter = error.message;
+    let regularConfig;
+    checkCancelled();
+    if (!frameHook && frameRate === 60 && width * height > 1920 * 1080) {
+      // 直接使用当前编码器已经能硬编的设备无需另启离屏窗口。
+      regularConfig = await chooseEncoderConfig(width, height, frameRate, true).catch(() => null);
+      if (regularConfig?.hardwareAcceleration !== 'prefer-hardware') {
+        try {
+          rendered = await renderWithNativeEncoder(renderSettings, signal, onProgress);
+        } catch (error) {
+          checkCancelled();
+          console.warn('[Recly] 原生硬件导出失败，使用常规导出：', error.message);
+          onProgress({ stage: '正在切换到常规导出', fraction: 0 });
+        }
+      }
+    }
+    checkCancelled();
+    if (!rendered) {
+      try {
+        rendered = await renderVideo({ ...job, hardware: true, encoderConfig: regularConfig });
+      } catch (error) {
+        // 硬件编解码卡住或报错时，自动改用软件路径完整重来一遍。
+        if (error.cancelled || !(error.stalled || error.codecFailure)) throw error;
+        console.warn('[DogSC] 硬件编解码未能完成，改用软件路径重试：', error.message);
+        onProgress({ stage: '硬件编码没有响应，正在改用软件编码重试', fraction: 0 });
+        rendered = await renderVideo({ ...job, hardware: false });
+        rendered.retriedAfter = error.message;
+      }
     }
     checkCancelled();
     await mux({ videoFile: rawFile, frameRate, colorSpace: rendered.colorSpace });

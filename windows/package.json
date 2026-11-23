@@ -27,5 +27,8 @@
   },
   "dependencies": {
     "koffi": "^3.3.2"
+  },
+  "optionalDependencies": {
+    "node-av-lgpl": "7.1.0"
   }
 }

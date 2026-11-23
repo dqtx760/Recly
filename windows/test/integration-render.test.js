@@ -497,6 +497,32 @@ test('camera content framing: zoom and position change the crop inside its mask'
   assert.deepEqual(draw.slice(1), [-280, -70, 400, 200], '镜像摄像头的水平取景位置按最终视觉方向反转');
 });
 
+test('fullscreen camera skips covered layers only while an opaque frame fills the canvas', () => {
+  const compositor = new Compositor('.');
+  const ctx = createMockCanvas(320, 180).getContext('2d');
+  const layers = [];
+  compositor.drawVideoBackground = () => layers.push('background');
+  compositor.drawScreen = () => layers.push('screen');
+  compositor.drawCamera = () => layers.push('camera');
+  compositor.drawStickers = () => layers.push('stickers');
+  const camera = { opacity: 1, cornerRadius: 0, rect: { x: 0, y: 0, width: 320, height: 180 } };
+  const scene = { width: 320, height: 180, camera, stickers: [{}] };
+  const project = { canvas: { background: { kind: 'video' } } };
+  const frame = { width: 320, height: 180 };
+  function draw(sceneChanges, cameraFrame = frame) {
+    layers.length = 0;
+    compositor.draw(ctx, project, { ...scene, ...sceneChanges }, { screen: frame, camera: cameraFrame });
+    return layers.slice();
+  }
+  assert.deepEqual(draw({}), ['camera', 'stickers']);
+  assert.deepEqual(draw({}, null), ['background', 'screen', 'stickers']);
+  const all = ['background', 'screen', 'camera', 'stickers'];
+  assert.deepEqual(draw({ camera: { ...camera, opacity: 0.99 } }), all);
+  assert.deepEqual(draw({ camera: { ...camera, cornerRadius: 1 } }), all);
+  assert.deepEqual(draw({ camera: { ...camera, rect: { ...camera.rect, x: 1 } } }), all);
+  assert.deepEqual(draw({ stickerBackdrop: { cameraSuppression: 0.5 } }), all);
+});
+
 test('sticker backdrop flags suppress the screen and camera layers during composition', () => {
   const project = model.makeProject({
     name: 'Sticker Backdrop Test',
